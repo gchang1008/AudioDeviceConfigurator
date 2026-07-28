@@ -60,7 +60,8 @@ public sealed class AppHarness
         string? endpointId = null,
         string name = "Digital Display Audio",
         bool isDefault = true,
-        string? svclId = null)
+        string? svclId = null,
+        string? containerId = "{11111111-2222-3333-4444-555555555555}")
     {
         Endpoints.Endpoints.Add(new EndpointInfo(
             EndpointId: endpointId ?? DefaultEndpointId,
@@ -70,28 +71,40 @@ public sealed class AppHarness
             DriverName: "NVIDIA High Definition Audio",
             DriverVersion: "1.4.4.1",
             IsDefault: isDefault,
-            ContainerId: "{11111111-2222-3333-4444-555555555555}"));
+            ContainerId: containerId));
         return this;
     }
 
-    public AppHarness WithDisplay(byte[] edid, string monitorId = @"\\?\DISPLAY#DEL4321#5&1234#{guid}", string name = "DELL U2723QE")
+    public AppHarness WithDisplay(
+        byte[] edid,
+        string monitorId = @"\\?\DISPLAY#DEL4321#5&1234#{guid}",
+        string name = "DELL U2723QE",
+        string? containerId = "{11111111-2222-3333-4444-555555555555}")
     {
         Displays.Displays.Add(new DisplayInfo(
             MonitorId: monitorId,
             FriendlyName: name,
             AdapterName: "NVIDIA GeForce RTX 4070",
             GpuDriverVersion: "32.0.15.6094",
-            RawEdid: edid));
+            RawEdid: edid,
+            ContainerId: containerId));
         return this;
     }
 
-    public AppHarness WithLpcmDisplay(int maxChannels = 8, int[]? rates = null, int[]? depths = null, string monitorId = @"\\?\DISPLAY#DEL4321#5&1234#{guid}", string name = "DELL U2723QE", string? monitorName = "U2723QE")
+    public AppHarness WithLpcmDisplay(
+        int maxChannels = 8,
+        int[]? rates = null,
+        int[]? depths = null,
+        string monitorId = @"\\?\DISPLAY#DEL4321#5&1234#{guid}",
+        string name = "DELL U2723QE",
+        string? monitorName = "U2723QE",
+        string? containerId = "{11111111-2222-3333-4444-555555555555}")
     {
         var edid = new EdidBuilder()
             .WithMonitorName(monitorName)
             .WithCtaAudioBlock(SadSpec.Lpcm(maxChannels, rates ?? [48000], depths ?? [16]))
             .Build();
-        return WithDisplay(edid, monitorId, name);
+        return WithDisplay(edid, monitorId, name, containerId);
     }
 
     public AppHarness WithOriginalFormat(int channels, int sampleRate, int effectiveBits)

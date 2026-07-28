@@ -114,11 +114,30 @@ internal static class CoreAudio
     [StructLayout(LayoutKind.Explicit, Size = 24)]
     public struct PropVariant
     {
+        private const ushort VtLpwstr = 31;
+        private const ushort VtClsid = 72;
+
         [FieldOffset(0)] public ushort VariantType;
         [FieldOffset(8)] public IntPtr PointerValue;
 
         public string? AsString() =>
-            VariantType == 31 ? Marshal.PtrToStringUni(PointerValue) : null;
+            VariantType == VtLpwstr ? Marshal.PtrToStringUni(PointerValue) : null;
+
+        /// <summary>
+        /// VT_CLSID stores a pointer to the GUID rather than the GUID itself, which is how
+        /// PKEY_Device_ContainerId arrives. Returned in the braced form Windows displays.
+        /// </summary>
+        public string? AsGuid()
+        {
+            if (VariantType != VtClsid || PointerValue == IntPtr.Zero)
+            {
+                return null;
+            }
+
+            var bytes = new byte[16];
+            Marshal.Copy(PointerValue, bytes, 0, 16);
+            return new Guid(bytes).ToString("B").ToUpperInvariant();
+        }
     }
 
     // PKEY_Device_FriendlyName, PKEY_Device_DeviceDesc, PKEY_DeviceClass_IconPath equivalents.

@@ -70,7 +70,10 @@ public sealed class CoreAudioEndpointProvider : IAudioEndpointProvider
             ?? throw new InvalidOperationException("Unable to create the Core Audio device enumerator."));
     }
 
-    /// <summary>Reads a string property, returning null when the property is absent.</summary>
+        /// <summary>
+    /// Reads a property, returning null when it is absent. String and GUID properties are both
+    /// needed: ContainerId arrives as VT_CLSID rather than a string.
+    /// </summary>
     private static string? ReadProperty(CoreAudio.IMMDevice device, CoreAudio.PropertyKey key)
     {
         if (device.OpenPropertyStore(CoreAudio.StgmRead, out var store) != CoreAudio.SOk || store is null)
@@ -85,7 +88,7 @@ public sealed class CoreAudioEndpointProvider : IAudioEndpointProvider
                 return null;
             }
 
-            var text = value.AsString();
+            var text = value.AsString() ?? value.AsGuid();
             CoreAudio.PropVariantClear(ref value);
             return text;
         }

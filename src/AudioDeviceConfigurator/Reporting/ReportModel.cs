@@ -65,6 +65,8 @@ public sealed record MonitorReport(
     int ExtensionCount,
     string? AdapterName,
     string? GpuDriverVersion,
+    string? ContainerId,
+    string PairingMethod,
     string RawEdidHex,
     IReadOnlyList<SadReport> AudioDescriptors);
 

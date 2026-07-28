@@ -124,6 +124,7 @@ public sealed class ValidationRunner(AppEnvironment env, CancellationToken cance
                 env.Console.WriteLine($"  {endpoint.FriendlyName}{marker}");
                 env.Console.WriteLine($"    Endpoint ID : {endpoint.EndpointId}");
                 env.Console.WriteLine($"    Description : {endpoint.DeviceDescription}");
+                env.Console.WriteLine($"    Container   : {endpoint.ContainerId ?? "Unknown"}");
             }
 
             env.Console.WriteLine();
@@ -133,6 +134,7 @@ public sealed class ValidationRunner(AppEnvironment env, CancellationToken cance
                 env.Console.WriteLine($"  {display.FriendlyName}");
                 env.Console.WriteLine($"    Monitor ID  : {display.MonitorId}");
                 env.Console.WriteLine($"    Adapter     : {display.AdapterName ?? "Unknown"}");
+                env.Console.WriteLine($"    Container   : {display.ContainerId ?? "Unknown"}");
             }
 
             return ExitCode.Pass;
@@ -164,7 +166,7 @@ public sealed class ValidationRunner(AppEnvironment env, CancellationToken cance
         _monitorNameForFile = parsed.MonitorName ?? target.Display.FriendlyName;
 
         var candidates = CandidateGenerator.Generate(parsed);
-        _monitorReport = ToReport(target.Display, parsed, candidates);
+        _monitorReport = ToReport(target.Display, parsed, candidates, target.PairingMethod);
 
         env.Console.WriteLine($"Endpoint : {target.Endpoint.FriendlyName}");
         env.Console.WriteLine($"           {target.Endpoint.EndpointId}");
@@ -555,7 +557,8 @@ public sealed class ValidationRunner(AppEnvironment env, CancellationToken cance
     private static MonitorReport ToReport(
         DisplayInfo display,
         ParsedEdid parsed,
-        IReadOnlyList<CandidateFormat> candidates)
+        IReadOnlyList<CandidateFormat> candidates,
+        PairingMethod pairingMethod)
     {
         var testedSources = candidates.SelectMany(c => c.SourceSadReferences).ToHashSet();
 
@@ -571,6 +574,8 @@ public sealed class ValidationRunner(AppEnvironment env, CancellationToken cance
             ExtensionCount: parsed.ExtensionCount,
             AdapterName: display.AdapterName,
             GpuDriverVersion: display.GpuDriverVersion,
+            ContainerId: display.ContainerId,
+            PairingMethod: pairingMethod.ToString(),
             RawEdidHex: Convert.ToHexString(parsed.RawBytes),
             AudioDescriptors: parsed.AudioDescriptors.Select(d => new SadReport(
                 d.SourceReference,

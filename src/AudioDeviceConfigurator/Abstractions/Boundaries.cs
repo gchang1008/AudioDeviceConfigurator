@@ -8,7 +8,8 @@ public sealed record DisplayInfo(
     string FriendlyName,
     string? AdapterName,
     string? GpuDriverVersion,
-    byte[] RawEdid);
+    byte[] RawEdid,
+    string? ContainerId = null);
 
 /// <summary>An active WASAPI render endpoint.</summary>
 public sealed record EndpointInfo(

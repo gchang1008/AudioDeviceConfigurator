@@ -76,7 +76,8 @@ public sealed class WindowsDisplayProvider : IDisplayProvider
                     : targetName.monitorFriendlyDeviceName,
                 AdapterName: adapterName,
                 GpuDriverVersion: adapterName is null ? null : GetGpuDriverVersion(adapterName),
-                RawEdid: edid));
+                RawEdid: edid,
+                ContainerId: ReadContainerId(devicePath)));
         }
 
         return displays;
@@ -153,6 +154,67 @@ public sealed class WindowsDisplayProvider : IDisplayProvider
 
         return null;
     }
+
+    /// <summary>
+    /// Reads the device container the monitor belongs to, which is the same GUID its HDMI/DP audio
+    /// endpoint reports. This is what lets an endpoint be paired with its own monitor.
+    /// </summary>
+    private static string? ReadContainerId(string devicePath)
+    {
+        var instanceId = ToDeviceInstanceId(devicePath);
+        if (instanceId is null || CM_Locate_DevNodeW(out var devInst, instanceId, 0) != CrSuccess)
+        {
+            return null;
+        }
+
+        var key = DevpkeyDeviceContainerId;
+        var size = 16;
+        var buffer = new byte[size];
+        if (CM_Get_DevNode_PropertyW(devInst, ref key, out var propertyType, buffer, ref size, 0) != CrSuccess
+            || propertyType != DevpropTypeGuid
+            || size != 16)
+        {
+            return null;
+        }
+
+        return new Guid(buffer).ToString("B").ToUpperInvariant();
+    }
+
+    /// <summary>
+    /// Turns \\?\DISPLAY#ACI22E5#5&amp;c1713af&amp;0&amp;UID45312#{guid} into the device instance ID
+    /// DISPLAY\ACI22E5\5&amp;c1713af&amp;0&amp;UID45312 that the Configuration Manager expects.
+    /// </summary>
+    private static string? ToDeviceInstanceId(string devicePath)
+    {
+        var trimmed = devicePath.StartsWith(@"\\?\", StringComparison.Ordinal) ? devicePath[4..] : devicePath;
+        var parts = trimmed.Split('#');
+        return parts.Length < 3 ? null : $@"{parts[0]}\{parts[1]}\{parts[2]}";
+    }
+
+    private const int CrSuccess = 0;
+    private const int DevpropTypeGuid = 0x0000000D;
+
+    private static DevpropKey DevpkeyDeviceContainerId =>
+        new(new Guid("8c7ed206-3f8a-4827-b3ab-ae9e1faefc6c"), 2);
+
+    [StructLayout(LayoutKind.Sequential, Pack = 4)]
+    private struct DevpropKey(Guid formatId, uint propertyId)
+    {
+        public Guid FormatId = formatId;
+        public uint PropertyId = propertyId;
+    }
+
+    [DllImport("cfgmgr32.dll", CharSet = CharSet.Unicode)]
+    private static extern int CM_Locate_DevNodeW(out uint devInst, string deviceId, uint flags);
+
+    [DllImport("cfgmgr32.dll", CharSet = CharSet.Unicode)]
+    private static extern int CM_Get_DevNode_PropertyW(
+        uint devInst,
+        ref DevpropKey propertyKey,
+        out int propertyType,
+        [Out] byte[] propertyBuffer,
+        ref int propertyBufferSize,
+        uint flags);
 
     [StructLayout(LayoutKind.Sequential)]
     private struct Luid

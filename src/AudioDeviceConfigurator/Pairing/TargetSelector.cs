@@ -6,7 +6,26 @@ public sealed class TargetSelectionException(string message) : Exception(message
 
 public sealed class SelectionCancelledException(string message) : Exception(message);
 
-public sealed record SelectedTarget(EndpointInfo Endpoint, DisplayInfo Display, bool WasInteractive);
+public sealed record SelectedTarget(
+    EndpointInfo Endpoint,
+    DisplayInfo Display,
+    PairingMethod PairingMethod)
+{
+    public bool WasInteractive => PairingMethod == PairingMethod.Interactive;
+}
+
+/// <summary>How the tested display was chosen, recorded so a result can be judged in context.</summary>
+public enum PairingMethod
+{
+    /// <summary>The tester supplied --monitor-id.</summary>
+    Explicit,
+
+    /// <summary>Exactly one active display shares the endpoint's device container.</summary>
+    Container,
+
+    /// <summary>The tester chose from a list because pairing was ambiguous.</summary>
+    Interactive,
+}
 
 /// <summary>
 /// Chooses the endpoint and monitor to test. Automatic when unambiguous, interactive when not,
@@ -31,8 +50,8 @@ public sealed class TargetSelector(IConsole console)
         }
 
         var endpoint = ResolveEndpoint(endpoints, requestedEndpointId);
-        var display = ResolveDisplay(displays, requestedMonitorId, endpoint, out var interactive);
-        return new SelectedTarget(endpoint, display, interactive);
+        var display = ResolveDisplay(displays, requestedMonitorId, endpoint, out var method);
+        return new SelectedTarget(endpoint, display, method);
     }
 
     private static EndpointInfo ResolveEndpoint(IReadOnlyList<EndpointInfo> endpoints, string? requestedId)
@@ -54,12 +73,11 @@ public sealed class TargetSelector(IConsole console)
         IReadOnlyList<DisplayInfo> displays,
         string? requestedId,
         EndpointInfo endpoint,
-        out bool interactive)
+        out PairingMethod method)
     {
-        interactive = false;
-
         if (requestedId is not null)
         {
+            method = PairingMethod.Explicit;
             return displays.FirstOrDefault(d =>
                        string.Equals(
                            StripWin32Prefix(d.MonitorId),
@@ -69,14 +87,50 @@ public sealed class TargetSelector(IConsole console)
                        $"No active display matches the monitor ID '{requestedId}'.");
         }
 
-        if (displays.Count == 1)
+        // Pair on the device container the endpoint and its monitor share. A display count of one
+        // is NOT evidence of ownership: a USB headset endpoint with one attached monitor would
+        // otherwise be silently tested against an EDID that has nothing to do with it.
+        var owned = MatchByContainer(displays, endpoint);
+        if (owned.Count == 1)
         {
-            return displays[0];
+            method = PairingMethod.Container;
+            return owned[0];
         }
 
-        interactive = true;
-        return PromptForDisplay(displays, endpoint);
+        method = PairingMethod.Interactive;
+        return PromptForDisplay(owned.Count > 1 ? owned : displays, endpoint);
     }
+
+    /// <summary>
+    /// Displays sharing the endpoint's container. The all-zero/all-F GUID is Windows' "no
+    /// container" sentinel and must never be treated as a match, even on both sides.
+    /// </summary>
+    private static IReadOnlyList<DisplayInfo> MatchByContainer(
+        IReadOnlyList<DisplayInfo> displays,
+        EndpointInfo endpoint)
+    {
+        if (!HasRealContainer(endpoint.ContainerId))
+        {
+            return [];
+        }
+
+        return displays
+            .Where(d => HasRealContainer(d.ContainerId)
+                        && string.Equals(
+                            NormalizeContainer(d.ContainerId!),
+                            NormalizeContainer(endpoint.ContainerId!),
+                            StringComparison.OrdinalIgnoreCase))
+            .ToList();
+    }
+
+    private const string NullContainerSentinel = "00000000-0000-0000-FFFF-FFFFFFFFFFFF";
+
+    private static bool HasRealContainer(string? containerId) =>
+        !string.IsNullOrWhiteSpace(containerId)
+        && !NormalizeContainer(containerId).Equals(NullContainerSentinel, StringComparison.OrdinalIgnoreCase);
+
+    private static string NormalizeContainer(string containerId) =>
+        containerId.Trim().Trim('{', '}');
 
     /// <summary>
     /// Every active monitor ID carries the same Win32 namespace prefix, which shells mangle when
