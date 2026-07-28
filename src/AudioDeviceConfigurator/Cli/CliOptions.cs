@@ -68,7 +68,9 @@ public sealed record CliOptions(
           (no options)          Test the current default active render endpoint against the
                                 EDID of its paired active monitor.
           --device-id <id>      Test a specific active render endpoint by its endpoint ID.
-          --monitor-id <id>     Use a specific active monitor by its device ID.
+          --monitor-id <id>     Use a specific active monitor by its device ID. The leading
+                                \\?\ prefix shown by --list may be omitted, since some shells
+                                mangle it.
           --list                List active displays and active render endpoints, then exit.
           --help, -h            Show this help text and exit.
 

@@ -126,6 +126,56 @@ public class PairingAndCliTests
         Assert.Equal("mon-b", h.JsonReport.GetProperty("Monitor").GetProperty("MonitorId").GetString());
     }
 
+    [Theory]
+    [InlineData(@"\\?\DISPLAY#ACI22E5#5&c1713af&0&UID45312#{e6f07b5f}")]
+    [InlineData(@"DISPLAY#ACI22E5#5&c1713af&0&UID45312#{e6f07b5f}")]
+    public void Accepts_a_monitor_id_with_or_without_the_win32_prefix(string requestedId)
+    {
+        var h = new AppHarness()
+            .WithEndpoint()
+            .WithLpcmDisplay(maxChannels: 2, depths: [16], monitorId: "other-monitor", name: "Other")
+            .WithLpcmDisplay(
+                maxChannels: 2,
+                depths: [16],
+                monitorId: @"\\?\DISPLAY#ACI22E5#5&c1713af&0&UID45312#{e6f07b5f}",
+                name: "VX229");
+
+        var exit = h.Run("--monitor-id", requestedId);
+
+        Assert.Equal(ExitCode.Pass, exit);
+        Assert.Equal(
+            @"\\?\DISPLAY#ACI22E5#5&c1713af&0&UID45312#{e6f07b5f}",
+            h.JsonReport.GetProperty("Monitor").GetProperty("MonitorId").GetString());
+        Assert.DoesNotContain("Select the monitor", h.ConsoleText);
+    }
+
+    [Fact]
+    public void Still_rejects_an_unknown_monitor_id_after_prefix_normalization()
+    {
+        var h = new AppHarness()
+            .WithEndpoint()
+            .WithLpcmDisplay(maxChannels: 2, depths: [16], monitorId: @"\\?\DISPLAY#ACI22E5#UID45312");
+
+        var exit = h.Run("--monitor-id", @"DISPLAY#OTHER99#UID00000");
+
+        Assert.Equal(ExitCode.SystemError, exit);
+        Assert.Contains("DISPLAY#OTHER99#UID00000", h.ErrorText);
+    }
+
+    [Fact]
+    public void Distinguishes_monitors_that_differ_only_after_the_win32_prefix()
+    {
+        var h = new AppHarness()
+            .WithEndpoint()
+            .WithLpcmDisplay(maxChannels: 2, depths: [16], monitorId: @"\\?\DISPLAY#ACI22E5#UID45312", name: "Left")
+            .WithLpcmDisplay(maxChannels: 8, depths: [16], monitorId: @"\\?\DISPLAY#ACI22E5#UID45313", name: "Right");
+
+        var exit = h.Run("--monitor-id", @"DISPLAY#ACI22E5#UID45313");
+
+        Assert.Equal(ExitCode.Pass, exit);
+        Assert.Equal("Right", h.JsonReport.GetProperty("Monitor").GetProperty("FriendlyName").GetString());
+    }
+
     [Fact]
     public void Reports_a_system_error_for_an_unknown_endpoint_id()
     {

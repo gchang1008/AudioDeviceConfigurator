@@ -61,7 +61,10 @@ public sealed class TargetSelector(IConsole console)
         if (requestedId is not null)
         {
             return displays.FirstOrDefault(d =>
-                       string.Equals(d.MonitorId, requestedId, StringComparison.OrdinalIgnoreCase))
+                       string.Equals(
+                           StripWin32Prefix(d.MonitorId),
+                           StripWin32Prefix(requestedId),
+                           StringComparison.OrdinalIgnoreCase))
                    ?? throw new TargetSelectionException(
                        $"No active display matches the monitor ID '{requestedId}'.");
         }
@@ -74,6 +77,14 @@ public sealed class TargetSelector(IConsole console)
         interactive = true;
         return PromptForDisplay(displays, endpoint);
     }
+
+    /// <summary>
+    /// Every active monitor ID carries the same Win32 namespace prefix, which shells mangle when
+    /// an ID is copied from --list into --monitor-id. Ignoring it on both sides of the comparison
+    /// stays injective, so two distinct monitors can never collapse onto one match.
+    /// </summary>
+    private static string StripWin32Prefix(string id) =>
+        id.StartsWith(@"\\?\", StringComparison.Ordinal) ? id[4..] : id;
 
     private DisplayInfo PromptForDisplay(IReadOnlyList<DisplayInfo> displays, EndpointInfo endpoint)
     {
