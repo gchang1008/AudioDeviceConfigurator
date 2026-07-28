@@ -192,6 +192,27 @@ public class RestorationTests
     }
 
     [Fact]
+    public void Never_reports_a_failed_restore_as_succeeded_after_a_later_retry()
+    {
+        var h = new AppHarness()
+            .WithEndpoint()
+            .WithLpcmDisplay(maxChannels: 8, depths: [16])
+            .WithOriginalFormat(2, 44100, 16);
+        h.Svcl.SubstituteOnSet = f => f.Channels == 2 && f.SampleRate == 48000 ? (2, 32000, 16) : f;
+        // Only the first restore attempt fails; a retry would succeed and mask the failure.
+        h.Svcl.FailSetOnInvocation = n => n == 2;
+
+        var exit = h.Run();
+
+        Assert.Equal(ExitCode.SystemError, exit);
+        var restore = h.JsonReport.GetProperty("Restore");
+        Assert.True(restore.GetProperty("Attempted").GetBoolean());
+        Assert.False(restore.GetProperty("Succeeded").GetBoolean());
+        Assert.Contains("Restoration failed", restore.GetProperty("FailureDetail").GetString());
+        Assert.Equal(2, h.Svcl.SetCommands.Count()); // the failed candidate plus one restore attempt
+    }
+
+    [Fact]
     public void Records_the_verified_restored_format_in_the_report()
     {
         var h = new AppHarness()

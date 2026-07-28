@@ -35,6 +35,7 @@ public sealed class ValidationRunner(AppEnvironment env, CancellationToken cance
 
     private SavedFormat? _originalFormat;
     private bool _formatModified;
+    private bool _restoreFailed;
     private RestoreReport _restore = new(Attempted: false, Succeeded: false, Trigger: null, VerifiedFormat: null, FailureDetail: null);
     private SvclClient? _svcl;
     private EndpointReport? _endpointReport;
@@ -92,7 +93,9 @@ public sealed class ValidationRunner(AppEnvironment env, CancellationToken cance
         }
 
         // Restoration is attempted for every path that reached a modification, including errors.
-        if (_formatModified && !_restore.Succeeded)
+        // A restore that has already failed is never retried: the first failure is the reportable
+        // outcome, and continuing to touch a system we cannot restore is what story 46 forbids.
+        if (_formatModified && !_restoreFailed && !_restore.Succeeded)
         {
             var trigger = status switch
             {
@@ -281,20 +284,20 @@ public sealed class ValidationRunner(AppEnvironment env, CancellationToken cance
     /// <summary>Polls the saved format every 200 ms for up to 3 s so slower drivers are not falsely failed.</summary>
     private (SavedFormat Format, double ElapsedMs) PollForReadback(string deviceSelector, CandidateFormat candidate)
     {
-        var deadline = env.Clock.Elapsed + ReadbackTimeout;
+        var startedAt = env.Clock.Elapsed;
+        var deadline = startedAt + ReadbackTimeout;
         SavedFormat? last = null;
         Exception? lastError = null;
 
         while (true)
         {
-            var startedAt = env.Clock.Elapsed;
             try
             {
                 last = _svcl!.SaveDeviceFormat(deviceSelector);
                 lastError = null;
                 if (Matches(last, candidate))
                 {
-                    return (last, (env.Clock.Elapsed - (deadline - ReadbackTimeout)).TotalMilliseconds);
+                    return (last, (env.Clock.Elapsed - startedAt).TotalMilliseconds);
                 }
             }
             catch (SvclException ex)
@@ -308,7 +311,6 @@ public sealed class ValidationRunner(AppEnvironment env, CancellationToken cance
             }
 
             env.Clock.Sleep(ReadbackPollInterval);
-            _ = startedAt;
         }
 
         if (last is null)
@@ -316,7 +318,7 @@ public sealed class ValidationRunner(AppEnvironment env, CancellationToken cance
             throw lastError ?? new SvclException("The format could not be read back within the timeout.");
         }
 
-        return (last, ReadbackTimeout.TotalMilliseconds);
+        return (last, (env.Clock.Elapsed - startedAt).TotalMilliseconds);
     }
 
     private static bool Matches(SavedFormat saved, CandidateFormat candidate) =>
@@ -359,6 +361,7 @@ public sealed class ValidationRunner(AppEnvironment env, CancellationToken cance
         {
             var detail = $"Restoration failed ({trigger}): {ex.Message}";
             _errors.Add(detail);
+            _restoreFailed = true;
             _restore = new RestoreReport(
                 Attempted: true,
                 Succeeded: false,
@@ -461,7 +464,7 @@ public sealed class ValidationRunner(AppEnvironment env, CancellationToken cance
             Restore: _restore,
             Errors: _errors);
 
-        PrintSummary(report, status);
+        PrintSummary(report);
 
         try
         {
@@ -482,7 +485,7 @@ public sealed class ValidationRunner(AppEnvironment env, CancellationToken cance
         return status;
     }
 
-    private void PrintSummary(RunReport report, ExitCode status)
+    private void PrintSummary(RunReport report)
     {
         var passing = report.Candidates.Where(c => c.Status == CandidateStatus.Pass).ToList();
 
@@ -522,7 +525,6 @@ public sealed class ValidationRunner(AppEnvironment env, CancellationToken cance
                 : "WARNING: the original default format was NOT restored.");
         }
 
-        _ = status;
         env.Console.WriteLine();
     }
 

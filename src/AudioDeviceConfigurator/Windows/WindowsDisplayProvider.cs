@@ -1,6 +1,5 @@
 using System.Runtime.InteropServices;
 using System.Runtime.Versioning;
-using System.Text;
 using AudioDeviceConfigurator.Abstractions;
 using Microsoft.Win32;
 
@@ -277,6 +276,4 @@ public sealed class WindowsDisplayProvider : IDisplayProvider
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool EnumDisplayDevices(string? device, uint deviceIndex, ref DisplayDevice displayDevice, uint flags);
-
-    static WindowsDisplayProvider() => _ = Encoding.Unicode;
 }
