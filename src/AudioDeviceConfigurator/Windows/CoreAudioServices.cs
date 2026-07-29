@@ -6,11 +6,16 @@ namespace AudioDeviceConfigurator.Windows;
 
 /// <summary>Enumerates active render endpoints through Core Audio.</summary>
 [SupportedOSPlatform("windows")]
-public sealed class CoreAudioEndpointProvider : IAudioEndpointProvider
+public sealed class CoreAudioEndpointProvider(IDriverMetadataProvider driverMetadata) : IAudioEndpointProvider
 {
     public IReadOnlyList<EndpointInfo> GetActiveRenderEndpoints()
     {
         var enumerator = CreateEnumerator();
+        var drivers = driverMetadata.GetDriverMetadata();
+        var audioDrivers = drivers.AudioHdmi.ToDictionary(
+            d => d.Name,
+            d => d,
+            StringComparer.OrdinalIgnoreCase);
         string? defaultId = null;
         if (enumerator.GetDefaultAudioEndpoint(CoreAudio.EDataFlowRender, CoreAudio.ERoleConsole, out var defaultDevice) == CoreAudio.SOk)
         {
@@ -43,7 +48,7 @@ public sealed class CoreAudioEndpointProvider : IAudioEndpointProvider
                     DeviceDescription: description,
                     SvclCommandLineId: null,
                     DriverName: ExtractDeviceName(name, description),
-                    DriverVersion: null,
+                    DriverVersion: ResolveAudioDriverVersion(name, ExtractDeviceName(name, description), audioDrivers),
                     IsDefault: string.Equals(id, defaultId, StringComparison.OrdinalIgnoreCase),
                     ContainerId: containerId));
             }
@@ -108,6 +113,24 @@ public sealed class CoreAudioEndpointProvider : IAudioEndpointProvider
         }
 
         return description;
+    }
+
+    /// <summary>
+    /// Matches an endpoint to its HDMI audio driver. The friendly name is "Monitor (Driver)",
+    /// and the PowerShell payload lists drivers by "Driver" alone, so the parenthesised part is
+    /// the lookup key. Falls back to the full name for non-parenthesised endpoints.
+    /// </summary>
+    private static string? ResolveAudioDriverVersion(
+        string friendlyName,
+        string deviceName,
+        IReadOnlyDictionary<string, AudioHdmiDriver> audioDrivers)
+    {
+        if (audioDrivers.TryGetValue(deviceName, out var byDevice))
+        {
+            return byDevice.Version;
+        }
+
+        return audioDrivers.TryGetValue(friendlyName, out var byFriendly) ? byFriendly.Version : null;
     }
 
     private static void Check(int hr, string message)

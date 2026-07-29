@@ -7,6 +7,8 @@ public sealed record DisplayInfo(
     string MonitorId,
     string FriendlyName,
     string? AdapterName,
+    string? GpuDriverName,
+    string? GpuDriverProvider,
     string? GpuDriverVersion,
     byte[] RawEdid,
     string? ContainerId = null);
@@ -114,4 +116,23 @@ public sealed record SystemInfo(
 public interface ISystemInfoProvider
 {
     SystemInfo GetSystemInfo();
+}
+
+/// <summary>
+/// Driver metadata the spec's story 67 requires for cross-PC comparison. The Windows .NET
+/// surface cannot reach GPU or HDMI audio driver versions through any in-process API that
+/// would also satisfy story 58's "no third-party NuGet" rule, so this boundary delegates to a
+/// small PowerShell script that uses the built-in Get-CimInstance cmdlet.
+/// </summary>
+public sealed record DriverMetadata(
+    string? GpuName,
+    string? GpuDriverVersion,
+    string? GpuDriverProvider,
+    IReadOnlyList<AudioHdmiDriver> AudioHdmi);
+
+public sealed record AudioHdmiDriver(string Name, string? Version, string? Provider);
+
+public interface IDriverMetadataProvider
+{
+    DriverMetadata GetDriverMetadata();
 }

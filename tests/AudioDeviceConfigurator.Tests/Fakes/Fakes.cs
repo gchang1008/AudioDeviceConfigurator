@@ -172,3 +172,11 @@ public sealed class FakeFileSystem : IFileSystem
 
     public string ReadText(string path) => Encoding.UTF8.GetString(ReadAllBytes(path));
 }
+
+public sealed class FakeDriverMetadataProvider : IDriverMetadataProvider
+{
+    public DriverMetadata NextResult { get; set; } = new(
+        GpuName: null, GpuDriverVersion: null, GpuDriverProvider: null, AudioHdmi: []);
+
+    public DriverMetadata GetDriverMetadata() => NextResult;
+}

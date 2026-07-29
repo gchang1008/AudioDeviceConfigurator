@@ -24,16 +24,22 @@ public static class Program
             cancellation.Cancel();
         };
 
+        var appDirectory = AppContext.BaseDirectory.TrimEnd(Path.DirectorySeparatorChar);
+        var processRunner = new SystemProcessRunner();
+        var fileSystem = new SystemFileSystem();
+        var driverMetadata = new PowerShellDriverMetadataProvider(processRunner, fileSystem);
+
         var environment = new AppEnvironment(
-            Displays: new WindowsDisplayProvider(),
-            Endpoints: new CoreAudioEndpointProvider(),
+            Displays: new WindowsDisplayProvider(driverMetadata),
+            Endpoints: new CoreAudioEndpointProvider(driverMetadata),
             Wasapi: new WasapiFormatProbe(),
-            ProcessRunner: new SystemProcessRunner(),
-            FileSystem: new SystemFileSystem(),
+            ProcessRunner: processRunner,
+            FileSystem: fileSystem,
             Clock: new SystemClock(),
             Console: new SystemConsole(),
             SystemInfo: new SystemInfoProvider(),
-            ApplicationDirectory: AppContext.BaseDirectory.TrimEnd(Path.DirectorySeparatorChar));
+            DriverMetadata: driverMetadata,
+            ApplicationDirectory: appDirectory);
 
         var runner = new ValidationRunner(environment, cancellation.Token);
         return (int)runner.Run(CliOptions.Parse(args));

@@ -64,6 +64,8 @@ public sealed record MonitorReport(
     int EdidRevision,
     int ExtensionCount,
     string? AdapterName,
+    string? GpuDriverName,
+    string? GpuDriverProvider,
     string? GpuDriverVersion,
     string? ContainerId,
     string PairingMethod,

@@ -19,6 +19,7 @@ public sealed record AppEnvironment(
     IClock Clock,
     IConsole Console,
     ISystemInfoProvider SystemInfo,
+    IDriverMetadataProvider DriverMetadata,
     string ApplicationDirectory);
 
 /// <summary>
@@ -573,6 +574,8 @@ public sealed class ValidationRunner(AppEnvironment env, CancellationToken cance
             EdidRevision: parsed.EdidRevision,
             ExtensionCount: parsed.ExtensionCount,
             AdapterName: display.AdapterName,
+            GpuDriverName: display.GpuDriverName,
+            GpuDriverProvider: display.GpuDriverProvider,
             GpuDriverVersion: display.GpuDriverVersion,
             ContainerId: display.ContainerId,
             PairingMethod: pairingMethod.ToString(),

@@ -1,16 +1,16 @@
 # 實作狀況報告 — Audio Device Capability Validator
 
 對照來源：`SPEC.md`（GitHub issue gchang1008/AudioDeviceConfigurator#1 全文）
-版本：commit `00dbd27`
-自動化測試：172 通過 / 0 失敗
+版本：commit 待提交
+自動化測試：170 通過 / 0 失敗
 真機驗證：Windows 11 26100 x64、NVIDIA RTX 5070 Ti、ASUS VX229 + ASUS VG27AQL1A（HDMI）、雙螢幕環境
 
 ## 總覽
 
 | 標記 | 意義 | 條數 |
 |---|---|---|
-| ✅ | 完全符合，有測試或真機證據釘住 | 77 |
-| ⚠️ | 勉強符合，行為存在但未達成 story 的目的（55、65、67） | 3 |
+| ✅ | 完全符合，有測試或真機證據釘住 | 80 |
+| ⚠️ | 勉強符合 | 0 |
 | ❌ | 不符合 | 0 |
 
 ---
@@ -110,10 +110,10 @@
 | # | Story 摘要 | 狀態 | 證據 / 說明 |
 |---|---|---|---|
 | 54 | .NET 10 self-contained 單檔 win-x64 | ✅ | 產出單一 73 MB exe，無需安裝 runtime |
-| 55 | 啟動檢查 SVCL ≥ 1.28 | ⚠️ | **版號解讀為推測邏輯，見下方** |
+| 55 | 啟動檢查 SVCL ≥ 1.28 | ✅ | 讀 `FileVersionInfo.ProductVersion`，NirSoft 在資源裡直接寫 marketing 字串 `1.28`，不是 `(1,2,8,0)` 的四位檔案版號。測試涵蓋 `1.28.0.0` / `1.30.0.0` / `2.0.0.0` 通過與 `1.27.0.0` / `1.20.0.0` 拒絕；真機報告欄位 `SvclVersion = "1.28"`。 |
 | 56 | 缺少或過舊的 SVCL 歸為系統錯誤 | ✅ | 兩種情況皆 exit 2 並有明確訊息 |
 | 57 | 保留未修改的 SVCL exe / readme / CHM | ✅ | `svcl-x64/` 三檔原封不動，發佈時一併複製 |
-| 58 | 無第三方 NuGet 依賴 | ✅ | 主專案零 `PackageReference`，Windows API 全手寫 interop |
+| 58 | 無第三方 NuGet 依賴 | ✅ | 主專案零 `PackageReference`。PowerShell 腳本作為內嵌資源以抓 GPU/HDMI audio driver metadata（故事 67），PowerShell 是 Windows 內建不算第三方依賴。 |
 
 ### 主控台輸出（59–62）
 
@@ -130,9 +130,9 @@
 |---|---|---|---|
 | 63 | 所有候選（含失敗）都保留 | ✅ | 測試斷言三種狀態並存 |
 | 64 | CSV 每格式一列 | ✅ | 測試斷言 header + 6 列 |
-| 65 | 每列重複系統／螢幕／端點／驅動資訊 | ⚠️ | 欄位齊全，但驅動欄位部分為空（見 67） |
+| 65 | 每列重複系統／螢幕／端點／驅動資訊 | ✅ | CSV 每列重複 system/endpoint/monitor 與 driver metadata；測試 `Repeats_system_monitor_endpoint_and_driver_metadata_in_every_csv_row`；真機 6 列都有完整 driver 欄位 |
 | 66 | JSON 含 raw EDID 位元組 | ✅ | 完整 hex，與輸入位元組逐一相符 |
-| 67 | **含 PC 名、Windows 版本、GPU 與音訊驅動細節等** | ⚠️ | **驅動細節真機為 null，見下方** |
+| 67 | **含 PC 名、Windows 版本、GPU 與音訊驅動細節等** | ✅ | GPU driver 經 PowerShell 內嵌腳本抓 `Win32_PnPSignedDriver`（DeviceClass=Display）；HDMI audio driver 同腳本抓 DeviceClass=MEDIA。JSON `Monitor.GpuDriverVersion=32.0.16.1047`、`Monitor.GpuDriverName=NVIDIA GeForce RTX 5070 Ti`、`Endpoint.DriverVersion=1.4.5.7`，真機驗證於 2026-07-29。 |
 | 68 | 通過／失敗／錯誤／N/A／取消都產生報告 | ✅ | 各情境皆有測試 |
 | 69 | 早期失敗或 N/A 的 CSV 含摘要列 | ✅ | 測試斷言 header + 1 摘要列 |
 | 70 | 報告置於執行檔旁的 `Reports` | ✅ | 真機產出於 `publish\Reports\` |
@@ -162,51 +162,38 @@
 
 ## ⚠️ 勉強符合項目
 
-### Story 67 / 65 — 驅動細節真機為空
-
-規格：
-> I want the PC name, Windows version, **GPU and audio driver details**, endpoint IDs, monitor IDs, and parsed EDID included, **so that differences across PCs can be investigated**.
-
-真機報告實際值：
-
-| 欄位 | 值 | 評價 |
-|---|---|---|
-| `Endpoint.DriverName` | `NVIDIA High Definition Audio` | ✅ |
-| `Endpoint.DriverVersion` | `null` | ❌ |
-| `Monitor.AdapterName` | `Generic PnP Monitor` | ⚠️ 這是螢幕名，不是顯示卡 |
-| `Monitor.GpuDriverVersion` | `null` | ❌ |
-
-**故事 6 修復後的進展**：
-
-- ✅ **Endpoint↔Monitor 配對**：改用 device container GUID 自動配對；`Monitor.AdapterName`/`Endpoint.ContainerId`/`Monitor.PairingMethod` 都會在報告中記錄 `Container` / `Explicit` / `Interactive`。
-- ✅ **真機驗證**：雙螢幕下，兩台 NVIDIA HDMI 端點各自自動配上自己的螢幕；虛擬喇叭端點（哨兵容器）正確拒絕靜默配對。
-
-**故事 67 仍未完成**：
-
-- `Endpoint.DriverVersion` 仍為 null。Core Audio 端點的 IMMDevice 屬性包不公開 instance ID（`PKEY_Device_InstanceId` 回傳 null），需要走 PnP 樹上溯到 parent 裝置再讀 registry。我嘗試了 `CM_Locate_DevNodeW` + `CM_Get_DevNode_PropertyW(DEVPKEY_Device_Parent)`，但此路徑在 SWD\MMDEVAPI\... 端點上行為異常，找不到有效解後退回誠實的 null。
-- `Monitor.GpuDriverVersion` 為 null。`EnumDisplayDevices(sourceName, 0, ...)` 拿到的是 monitor 而非 adapter；adapter 名稱錯誤連帶導致 driver 版本比對不到正確的 class GUID。
-- 規格的「GPU/audio driver details」「differences across PCs can be investigated」目的仍未達成。
-
-**建議**：故事 67 需要直接呼叫 `SetupDiGetDevicePropertyW`（PowerShell 用的 API）而非 `CM_*`，搭配從 SetupAPI 取得 SWD\MMDEVAPI 端點的對應 PnP 節點；放棄重構已知可用的 `EnumDisplayDevices` 鏈。
-
-### Story 55 — SVCL 版號解讀為推測邏輯
-
-規格：
-> I want **SVCL 1.28 or newer** checked at startup.
-
-真機的 `svcl.exe` 檔案版本是 `1.2.8.0`。我加了 `NormalizeNirsoftVersion` 把它解讀為 1.28：
-
-```csharp
-return minor >= 10 ? $"{major}.{minor}" : $"{major}.{minor}{build}";
-```
-
-這是**我對 NirSoft 版號慣例的猜測**，規格沒有提及，我也只有這一個樣本。若未來發佈 `1.10.0.0` 意指 v1.10，會走 `minor >= 10` 分支而正確；但這只是碰巧，我無權威來源佐證此規則普遍成立。
-
-**替代方案**：改為不猜版號，直接驗證 `/SaveDeviceFormat` 實際可用（行為驗證優於版號比對），版號僅作為診斷資訊記錄。
+（無）
 
 ---
 
 ## 已修正缺陷
+
+### Story 67 — 透過 PowerShell 內嵌腳本抓 GPU/HDMI audio driver metadata
+
+之前在 .NET 程式內嘗試過三條路徑抓 GPU driver version，全部失敗（見 git log commit `00dbd27`）：
+
+1. Registry `HKLM\...\Class\{Display}` 比對 `DriverDesc` —— `EnumDisplayDevices` 對 monitor 路徑返回 monitor 名而非 adapter 名，比對不到。
+2. SetupAPI `SetupDiOpenDeviceInfoW` 走 monitor PnP 父鏈 —— 無 class 綁定的 list 不收 monitor devnode（`cr=1 INVALID_FUNCTION`）；`CM_Get_DevNode_PropertyW(DEVPKEY_Device_ClassGuid/Parent)` 對 monitor devnode 回 `CR_NO_SUCH_VALUE`（monitor 是 PnP 樹根）。
+3. WMI `Win32_VideoController` —— PowerShell 端驗證能直接拿到 `32.0.16.1047`，但 .NET 端要嘛用 `System.Management` NuGet（違反故事 58），要嘛手寫 WMI COM 介面（500+ 行），時間預算不允許。
+
+**轉折**：在 .NET 程式內抓取，與從主程式 spawn 外部程式抓取，是兩種不同的設計。PowerShell 內建於 Windows 10/11，**不算第三方依賴**（NuGet 才是第三方），把 `Get-CimInstance Win32_PnPSignedDriver` 包進 PowerShell 腳本作為 `<EmbeddedResource>` 內嵌進 .NET assembly，就能同時滿足：
+
+- 故事 67：GPU 與 HDMI audio driver version 都有值
+- 故事 58：主專案零 `PackageReference`
+- 規格的「differences across PCs」：報告含 `Monitor.GpuDriverVersion=32.0.16.1047` 與 `Endpoint.DriverVersion=1.4.5.7`
+
+實作：`scripts/Get-DriverInfo.ps1` 內嵌成 `AudioDeviceConfigurator.scripts.Get-DriverInfo.ps1` 資源；`PowerShellDriverMetadataProvider` 在執行時把腳本寫到 temp `.ps1` 檔、spawn `powershell.exe -File` 跑它、解析 stdout JSON、刪 temp 檔。`CoreAudioEndpointProvider` 以括號內 driver name 對 `AudioHdmiDriver.Name` 配對填回 `Endpoint.DriverVersion`；`WindowsDisplayProvider` 從 Gpu 物件直接填回 `Monitor.AdapterName`/`GpuDriverName`/`GpuDriverVersion`/`GpuDriverProvider`。
+
+真機驗證（2026-07-29）：`Monitor.GpuDriverVersion=32.0.16.1047`、`Endpoint.DriverVersion=1.4.5.7`、`Monitor.AdapterName=NVIDIA GeForce RTX 5070 Ti`。
+
+
+### Story 55 — 改讀 `ProductVersion` 而非 `FileVersion`（commit 待提交）
+
+之前 `SystemFileSystem.GetFileVersion` 用 `FileVersionInfo.FileMajorPart` 等結構化欄位組字串，回傳 `1.2.8.0`。為了把它當作 `1.28` 比對，加了 `NormalizeNirsoftVersion` 把第二、三位拼接。**這是把檔案版本冒充成 marketing 版本**，我承認是猜測。
+
+真相在 NirSoft 的 VERSION_INFO 資源：`ProductVersion` 字串欄位本身就是 `"1.28"`，不是 `(1,2,8,0)`。改用 `info.ProductVersion` 後直接拿 `"1.28"`，不需要任何 `NormalizeNirsoftVersion`，也不需猜版號慣例。`FileVersionInfo` 在 .NET 上對字串欄位的支援穩定 —— 沒有資源時回 `""`，不會誤讀。
+
+真機驗證：報告 `SvclVersion = "1.28"`，與規格要求的 marketing 版本字串一致。
 
 ### Story 6 — 端點與螢幕依 device container 配對（commit `b36d2fc`）
 
@@ -240,5 +227,10 @@ HDMI/DP 音訊端點與其螢幕共用同一個 device container GUID。改用�
 
 ## 建議處理順序
 
-1. **Story 67 驅動細節** — 診斷資訊失效（`Endpoint.DriverVersion`、`Monitor.GpuDriverVersion` 為 null），影響跨 PC 比對這個核心用途。需要改用 `SetupDiGetDevicePropertyW`（PowerShell 用的路徑），放棄 `CM_*` 在 SWD\MMDEVAPI 節點上的失敗路徑。
-2. **Story 55 版號** — 推測性邏輯，建議改為驗證 `/SaveDeviceFormat` 行為本身，版號僅作為診斷資訊記錄。
+（無未完成項目）
+
+---
+
+## 故事編號驗證
+
+80 條故事編號完整唯一（1..80 無缺漏、無重複），以 `awk` 從 IMPLEMENTATION_STATUS.md 掃描逐條驗證。

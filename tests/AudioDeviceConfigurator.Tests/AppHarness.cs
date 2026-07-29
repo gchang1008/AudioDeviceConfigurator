@@ -26,6 +26,7 @@ public sealed class AppHarness
     public FakeClock Clock { get; } = new();
     public FakeConsole Console { get; } = new();
     public FakeSystemInfoProvider SystemInfo { get; } = new();
+    public FakeDriverMetadataProvider DriverMetadata { get; } = new();
     public FakeSvclRunner Svcl { get; }
     public CancellationTokenSource Cancellation { get; } = new();
 
@@ -79,13 +80,19 @@ public sealed class AppHarness
         byte[] edid,
         string monitorId = @"\\?\DISPLAY#DEL4321#5&1234#{guid}",
         string name = "DELL U2723QE",
-        string? containerId = "{11111111-2222-3333-4444-555555555555}")
+        string? containerId = "{11111111-2222-3333-4444-555555555555}",
+        string? adapterName = "NVIDIA GeForce RTX 4070",
+        string? gpuDriverName = "NVIDIA GeForce RTX 4070",
+        string? gpuDriverProvider = null,
+        string? gpuDriverVersion = "32.0.15.6094")
     {
         Displays.Displays.Add(new DisplayInfo(
             MonitorId: monitorId,
             FriendlyName: name,
-            AdapterName: "NVIDIA GeForce RTX 4070",
-            GpuDriverVersion: "32.0.15.6094",
+            AdapterName: adapterName,
+            GpuDriverName: gpuDriverName,
+            GpuDriverProvider: gpuDriverProvider,
+            GpuDriverVersion: gpuDriverVersion,
             RawEdid: edid,
             ContainerId: containerId));
         return this;
@@ -116,7 +123,7 @@ public sealed class AppHarness
     public ExitCode Run(params string[] args)
     {
         var env = new AppEnvironment(
-            Displays, Endpoints, Wasapi, Svcl, FileSystem, Clock, Console, SystemInfo, AppDirectory);
+            Displays, Endpoints, Wasapi, Svcl, FileSystem, Clock, Console, SystemInfo, DriverMetadata, AppDirectory);
         var runner = new ValidationRunner(env, Cancellation.Token);
         return runner.Run(CliOptions.Parse(args));
     }

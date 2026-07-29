@@ -21,4 +21,8 @@
     <InternalsVisibleTo Include="AudioDeviceConfigurator.Tests" />
   </ItemGroup>
 
+  <ItemGroup>
+    <EmbeddedResource Include="..\..\scripts\Get-DriverInfo.ps1" LogicalName="AudioDeviceConfigurator.scripts.Get-DriverInfo.ps1" />
+  </ItemGroup>
+
 </Project>
