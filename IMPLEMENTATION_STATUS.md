@@ -1,17 +1,17 @@
 # 實作狀況報告 — Audio Device Capability Validator
 
 對照來源：`SPEC.md`（GitHub issue gchang1008/AudioDeviceConfigurator#1 全文）
-版本：commit `7a1aebd`
-自動化測試：162 通過 / 0 失敗
-真機驗證：Windows 11 26100 x64、NVIDIA RTX、ASUS VX229（HDMI）、雙螢幕環境
+版本：commit `00dbd27`
+自動化測試：172 通過 / 0 失敗
+真機驗證：Windows 11 26100 x64、NVIDIA RTX 5070 Ti、ASUS VX229 + ASUS VG27AQL1A（HDMI）、雙螢幕環境
 
 ## 總覽
 
 | 標記 | 意義 | 條數 |
 |---|---|---|
-| ✅ | 完全符合，有測試或真機證據釘住 | 76 |
+| ✅ | 完全符合，有測試或真機證據釘住 | 77 |
 | ⚠️ | 勉強符合，行為存在但未達成 story 的目的（55、65、67） | 3 |
-| ❌ | 不符合（6） | 1 |
+| ❌ | 不符合 | 0 |
 
 ---
 
@@ -26,7 +26,7 @@
 | 3 | 以 ID 選非預設 endpoint 而不改系統預設 | ✅ | 測試 `Reports_the_non_default_endpoint_selected_by_id_without_changing_the_default` |
 | 4 | endpoint + monitor ID 參數供無人值守 | ✅ | 測試 `Runs_unattended_when_both_ids_are_supplied`；真機雙螢幕實跑通過 |
 | 5 | `--list` 取得可用於腳本的穩定 ID | ✅ | 真機 round-trip 驗證：`--list` 輸出貼回 `--device-id` / `--monitor-id` 可直接跑完整趟 |
-| 6 | **歧義配對才互動，不靜默測錯螢幕** | ❌ | **見下方「不符合項目」** |
+| 6 | 歧義配對才互動，不靜默測錯螢幕 | ✅ | `TargetSelector` 以 endpoint 與 monitor 的 `ContainerId` 配對；唯一則自動、多個才互動、零個明確報錯；Windows 哨兵容器永不視為匹配。測試 `PairingByContainerTests`，真機雙螢幕兩台 NVIDIA HDMI 各自動配上自己的螢幕，虛擬喇叭端點正確拒絕靜默配對。 |
 | 7 | 可取消歧義選擇 | ✅ | 測試 `Cancels_with_exit_code_three_when_the_user_declines_to_choose` |
 | 8 | 取消有獨立 exit code | ✅ | exit 3；測試 `Returns_three_for_user_cancellation` |
 
@@ -156,28 +156,7 @@
 
 ## ❌ 不符合項目
 
-### Story 6 — 端點與螢幕的配對未實作
-
-規格（Implementation Decisions）：
-> Endpoint-to-monitor pairing will be automatic **when unique**. Ambiguity invokes an English interactive selection.
-
-**現況**：`TargetSelector.ResolveDisplay` 只看螢幕**數量**，完全未使用 endpoint 的任何資訊：
-
-```csharp
-if (displays.Count == 1) { return displays[0]; }   // 不論 endpoint 是什麼
-interactive = true;
-return PromptForDisplay(displays, endpoint);        // endpoint 僅用於顯示提示文字
-```
-
-**後果**：
-- 單螢幕時，即使選的是 USB 喇叭 endpoint，也會直接配上那台螢幕並拿它的 EDID 去測 —— 這正是 story 6「不要靜默測到錯的螢幕」要防的事。
-- 多螢幕時每次都問，即使其實可由容器唯一判定。
-
-**已具備但未使用的材料**：`EndpointInfo.ContainerId` 已透過 `PKEY_Device_ContainerId` 取得並寫入報告，只是從未參與比對。
-
-**為何先前未發現**：測試中「一台螢幕 → 不提示」的斷言，與「配對正確」是兩件事，而我只驗了前者。
-
-**修復方向**：以 endpoint 的 `ContainerId` 對上顯示路徑的容器，或以 CCD 的 `outputTechnology` 篩出 HDMI/DP 路徑；唯一則自動、多個才互動、零個則明確報錯。
+（無）
 
 ---
 
@@ -229,6 +208,16 @@ return minor >= 10 ? $"{major}.{minor}" : $"{major}.{minor}{build}";
 
 ## 已修正缺陷
 
+### Story 6 — 端點與螢幕依 device container 配對（commit `b36d2fc`）
+
+原本只看 active display 數量：1 個就直接用、>1 個就問人，**完全沒用 endpoint 的資訊**。這代表單螢幕環境下，USB 喇叭或虛擬喇叭端點會被靜默配上不屬於它的螢幕，正是 story 6 要防的事。
+
+HDMI/DP 音訊端點與其螢幕共用同一個 device container GUID。改用它配對後：唯一則自動、多個才互動、零個明確報錯；Windows「無容器」哨兵值永不視為匹配。
+
+端點容器以 `VT_CLSID` 而非字串形態送達，需透過新增的 `PropVariant.AsGuid` 解讀，否則一律回傳 null。螢幕容器走 `CM_Get_DevNode_PropertyW` 從 PnP 樹直接讀。
+
+真機驗證（雙螢幕、雙 NVIDIA HDMI）：兩端點各自動配上自己的螢幕，零提示；Steam 虛擬喇叭端點（哨兵容器）正確拒絕靜默配對，改為詢問。
+
 ### Story 47 / 79 — 還原失敗被重試而掩蓋（commit `5e03941`）
 
 原本 per-candidate 還原失敗後，`Run()` 的外層還原區塊會再試一次。若重試成功，`Restore.Succeeded` 被覆寫為 `true`，於是 JSON/CSV 聲稱還原乾淨、exit code 卻是 2 —— 正是 story 79「缺少證據不得被誤認為有效完成」要防的錯配。
@@ -251,6 +240,5 @@ return minor >= 10 ? $"{major}.{minor}" : $"{major}.{minor}{build}";
 
 ## 建議處理順序
 
-1. **Story 6 配對** — 唯一的真缺陷，會導致測到錯誤的螢幕
-2. **Story 67 驅動細節** — 診斷資訊失效，影響跨 PC 比對這個核心用途
-3. **Story 55 版號** — 推測性邏輯，建議改為行為驗證
+1. **Story 67 驅動細節** — 診斷資訊失效（`Endpoint.DriverVersion`、`Monitor.GpuDriverVersion` 為 null），影響跨 PC 比對這個核心用途。需要改用 `SetupDiGetDevicePropertyW`（PowerShell 用的路徑），放棄 `CM_*` 在 SWD\MMDEVAPI 節點上的失敗路徑。
+2. **Story 55 版號** — 推測性邏輯，建議改為驗證 `/SaveDeviceFormat` 行為本身，版號僅作為診斷資訊記錄。
