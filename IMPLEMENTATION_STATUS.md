@@ -9,9 +9,9 @@
 
 | 標記 | 意義 | 條數 |
 |---|---|---|
-| ✅ | 完全符合，有測試或真機證據釘住 | 80 |
-| ⚠️ | 勉強符合 | 0 |
-| ❌ | 不符合 | 0 |
+| ✅ | 完全符合，有測試或真機證據釘住 | 77 |
+| ⚠️ | 勉強符合，行為存在但未達成 story 的目的（31、65） | 2 |
+| ❌ | 不符合 | 1 |
 
 ---
 
@@ -66,7 +66,7 @@
 |---|---|---|---|
 | 29 | 一律 Exclusive 模式查詢 | ✅ | `AUDCLNT_SHAREMODE_EXCLUSIVE`；全程未呼叫 `Initialize`，不建立串流 |
 | 30 | 記錄精確 HRESULT | ✅ | 八位十六進位；真機記錄到 `0x88890008` |
-| 31 | 非 `S_OK` 不交給 SVCL | ✅ | 測試 `Never_calls_svcl_for_candidates_wasapi_did_not_approve` |
+| 31 | 非 `S_OK` 不交給 SVCL | ⚠️ | 結構符合（`Never_calls_svcl_for_candidates_wasapi_did_not_approve`），但 NVIDIA HDMI driver 對 `IsFormatSupported(EXTENSIBLE, ...)` 在某些格式回 false negative `AUDCLNT_E_UNSUPPORTED_FORMAT`，即使 driver 實際支援（Windows 控制台「預設格式」下拉顯示支援 24-bit 44.1/48 kHz，但程式判定 UNSUPPORTED）。這違反 spec 的精神目的（讓使用者不用進控制台就知道能切哪些格式），但符合字面（WASAPI 失敗不套用）。見「⚠️ 勉強符合項目」段。 |
 
 ### SVCL 套用與讀回（32–39）
 
@@ -130,9 +130,9 @@
 |---|---|---|---|
 | 63 | 所有候選（含失敗）都保留 | ✅ | 測試斷言三種狀態並存 |
 | 64 | CSV 每格式一列 | ✅ | 測試斷言 header + 6 列 |
-| 65 | 每列重複系統／螢幕／端點／驅動資訊 | ✅ | CSV 每列重複 system/endpoint/monitor 與 driver metadata；測試 `Repeats_system_monitor_endpoint_and_driver_metadata_in_every_csv_row`；真機 6 列都有完整 driver 欄位 |
+| 65 | 每列重複系統／螢幕／端點／驅動資訊 | ⚠️ | CSV 結構正確，每列都帶 driver 欄位；但 driver 能力顯示依賴故事 31 的 WASAPI 結果，受 false negative 影響。 |
 | 66 | JSON 含 raw EDID 位元組 | ✅ | 完整 hex，與輸入位元組逐一相符 |
-| 67 | **含 PC 名、Windows 版本、GPU 與音訊驅動細節等** | ✅ | GPU driver 經 PowerShell 內嵌腳本抓 `Win32_PnPSignedDriver`（DeviceClass=Display）；HDMI audio driver 同腳本抓 DeviceClass=MEDIA。JSON `Monitor.GpuDriverVersion=32.0.16.1047`、`Monitor.GpuDriverName=NVIDIA GeForce RTX 5070 Ti`、`Endpoint.DriverVersion=1.4.5.7`，真機驗證於 2026-07-29。 |
+| 67 | **含 PC 名、Windows 版本、GPU 與音訊驅動細節等** | ❌ | GPU driver 與 HDMI audio driver 元資料已抓（PowerShell 內嵌腳本），但 NVIDIA HDMI driver 對 `IsFormatSupported(EXTENSIBLE, ...)` 回 false negative，導致 32 kHz 16-bit、24-bit 44.1/48 kHz 等 driver 真支援的格式被誤標 UNSUPPORTED。規格原文 "so that differences across PCs can be investigated" 需跨 PC 對照 driver 能力，但程式輸出與控制台不一致，無法達成此目的。 |
 | 68 | 通過／失敗／錯誤／N/A／取消都產生報告 | ✅ | 各情境皆有測試 |
 | 69 | 早期失敗或 N/A 的 CSV 含摘要列 | ✅ | 測試斷言 header + 1 摘要列 |
 | 70 | 報告置於執行檔旁的 `Reports` | ✅ | 真機產出於 `publish\Reports\` |
@@ -156,13 +156,54 @@
 
 ## ❌ 不符合項目
 
-（無）
+### Story 67 — 驅動 metadata 對照目的未達成
+
+規格：
+> I want the PC name, Windows version, GPU and audio driver details, endpoint IDs, monitor IDs, and parsed EDID included, **so that differences across PCs can be investigated**.
+
+GPU driver 與 HDMI audio driver **元資料已抓到**（PowerShell 內嵌腳本，`Monitor.GpuDriverVersion=32.0.16.1047`、`Endpoint.DriverVersion=1.4.5.7`）。但「讓使用者知道這台 driver 實際能切哪些格式」這部分與 Windows 控制台不一致 —— 見故事 31 ⚠️ 段。
 
 ---
 
 ## ⚠️ 勉強符合項目
 
-（無）
+### Story 31 — NVIDIA HDMI driver 對 `IsFormatSupported` 回 false negative
+
+規格：
+> If WASAPI does not return `S_OK` for a format, the validator must not attempt to apply that format through SVCL.
+
+結構符合：對 `UnsupportedByWasapi` 候選確實不呼叫 SVCL（測試 `Never_calls_svcl_for_candidates_wasapi_did_not_approve`）。但 NVIDIA HDMI audio driver 對 `IAudioClient::IsFormatSupported(AUDCLNT_SHAREMODE_EXCLUSIVE, WAVEFORMATEXTENSIBLE, ...)` 在某些格式回 `AUDCLNT_E_UNSUPPORTED_FORMAT`（`0x88890008`），即使 driver 實際支援。
+
+**真機驗證**（NVIDIA GeForce RTX 5070 Ti HDMI to ASUS VG27AQL1A，2026-07-29）：
+
+| 候選 | Windows 控制台「預設格式」下拉 | 程式 WASAPI 查詢 | 真實 driver 行為 |
+|---|---|---|---|
+| 16-bit, 32 kHz | ✓ 列出 | ❌ UNSUPPORTED | **支援**（SVCL 套用讀回相符） |
+| 16-bit, 44.1 kHz | ✓ | ✓ | ✓ |
+| 16-bit, 48 kHz | ✓ | ✓ | ✓ |
+| 24-bit, 32 kHz | ✗ 沒列 | ❌ UNSUPPORTED | **不支援**（控制台也沒列，程式正確） |
+| 24-bit, 44.1 kHz | ✓ | ❌ UNSUPPORTED | **支援**（控制台有列，程式 false negative） |
+| 24-bit, 48 kHz | ✓ | ❌ UNSUPPORTED | **支援**（控制台有列，程式 false negative） |
+| 20-bit, 所有 sample rate | ✗ | ApplyFailed | **不支援**（EX 結構 WASAPI 通過但 SVCL 套用讀回不符） |
+
+**我嘗試過的修法**（均撤回）：
+
+1. **改用 `WAVEFORMATEX` 結構（18 bytes）替代 `WAVEFORMATEXTENSIBLE`（40 bytes）**：probe 證實 NVIDIA HDMI driver 對 EX 結構寬容接受（甚至 20-bit 都回 OK），但這是 **false positive** —— 程式對 20-bit 標 WASAPI OK、跑 SVCL 套用卻讀回 16-bit（driver 真的不支援 20-bit）。EX 結構不能信。
+2. **只對 16-bit 2ch 改 EX**：能讓 32 kHz 16-bit PASS，但 24-bit 仍走 EXTENSIBLE 且 44.1/48 kHz 仍 false negative。**部分修，未完全解決問題。**
+
+**撤回原因**：EX 結構對 20-bit 是 false positive 風險（會誤判 driver 支援，但套用會失敗），EXTENSIBLE 結構對 24-bit 是 false negative（會誤判 driver 不支援，但實際支援）。兩個結構對 NVIDIA HDMI 都不完美。
+
+**結論**：**`IsFormatSupported` 在 NVIDIA HDMI audio driver 上不可信**，唯一可靠的 driver 能力驗證方式是實際套用（svcl.exe `/SetDefaultFormat` + 讀回）。但這違反故事 31 的「非 S_OK 不交給 SVCL」字面約束。
+
+**建議**（需使用者決定）：
+
+- **(A) 修改 SPEC 故事 31**：對 WASAPI UNSUPPORTED 候選仍跑 SVCL 套用驗證，多 6 次套用但 driver 能力判斷正確。程式輸出與控制台一致。
+- **(B) 維持現狀**：報告忠實呈現 WASAPI 結果，接受 false negative。使用者看到 24-bit 44.1/48 kHz 標 UNSUPPORTED，需對照控制台確認（這正是規格要避免的）。
+- **(C) 文件化限制**：在報告加「⚠️ WASAPI 結果可能與 driver 真實能力不符，請對照 Windows 控制台確認」訊息。
+
+### Story 65 — CSV 欄位值受 WASAPI false negative 影響
+
+CSV 每列結構正確（重複 system/endpoint/monitor/driver metadata），但 driver 能力欄位（`Status`）依賴故事 31 的 WASAPI 結果，受 false negative 影響。修好故事 31 後自動升回 ✅。
 
 ---
 
