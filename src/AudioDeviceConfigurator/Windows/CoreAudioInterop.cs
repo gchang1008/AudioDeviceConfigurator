@@ -147,9 +147,6 @@ internal static class CoreAudio
     public static PropertyKey PkeyDeviceDeviceDesc =>
         new(new Guid("a45c254e-df1c-4efd-8020-67d146a850e0"), 2);
 
-    public static PropertyKey PkeyDeviceInstanceId =>
-        new(new Guid("78c34fc8-104a-4aca-9ea4-524d52996e57"), 256);
-
     public static PropertyKey PkeyDeviceContainerId =>
         new(new Guid("8c7ed206-3f8a-4827-b3ab-ae9e1faefc6c"), 2);
 

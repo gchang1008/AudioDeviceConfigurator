@@ -36,7 +36,6 @@ public sealed class CoreAudioEndpointProvider : IAudioEndpointProvider
                 var name = ReadProperty(device, CoreAudio.PkeyDeviceFriendlyName) ?? id;
                 var description = ReadProperty(device, CoreAudio.PkeyDeviceDeviceDesc) ?? "";
                 var containerId = ReadProperty(device, CoreAudio.PkeyDeviceContainerId);
-                var instanceId = ReadProperty(device, CoreAudio.PkeyDeviceInstanceId);
 
                 results.Add(new EndpointInfo(
                     EndpointId: id,
@@ -44,7 +43,7 @@ public sealed class CoreAudioEndpointProvider : IAudioEndpointProvider
                     DeviceDescription: description,
                     SvclCommandLineId: null,
                     DriverName: ExtractDeviceName(name, description),
-                    DriverVersion: instanceId,
+                    DriverVersion: null,
                     IsDefault: string.Equals(id, defaultId, StringComparison.OrdinalIgnoreCase),
                     ContainerId: containerId));
             }

@@ -197,9 +197,18 @@ return PromptForDisplay(displays, endpoint);        // endpoint 僅用於顯示�
 | `Monitor.AdapterName` | `Generic PnP Monitor` | ⚠️ 這是螢幕名，不是顯示卡 |
 | `Monitor.GpuDriverVersion` | `null` | ❌ |
 
-**根因**：`EnumDisplayDevices` 我抓錯層級，取到 monitor 而非 adapter；`GetGpuDriverVersion` 因此拿「Generic PnP Monitor」去比對顯示卡類別登錄檔，永遠比不到而回傳 null。`DriverVersion` 則是我把 endpoint 的 device instance ID 誤放進版本欄位，實際取不到值時為 null。
+**故事 6 修復後的進展**：
 
-欄位結構完整、報告可讀，但 story 的目的（跨 PC 比對差異）沒有達成。
+- ✅ **Endpoint↔Monitor 配對**：改用 device container GUID 自動配對；`Monitor.AdapterName`/`Endpoint.ContainerId`/`Monitor.PairingMethod` 都會在報告中記錄 `Container` / `Explicit` / `Interactive`。
+- ✅ **真機驗證**：雙螢幕下，兩台 NVIDIA HDMI 端點各自自動配上自己的螢幕；虛擬喇叭端點（哨兵容器）正確拒絕靜默配對。
+
+**故事 67 仍未完成**：
+
+- `Endpoint.DriverVersion` 仍為 null。Core Audio 端點的 IMMDevice 屬性包不公開 instance ID（`PKEY_Device_InstanceId` 回傳 null），需要走 PnP 樹上溯到 parent 裝置再讀 registry。我嘗試了 `CM_Locate_DevNodeW` + `CM_Get_DevNode_PropertyW(DEVPKEY_Device_Parent)`，但此路徑在 SWD\MMDEVAPI\... 端點上行為異常，找不到有效解後退回誠實的 null。
+- `Monitor.GpuDriverVersion` 為 null。`EnumDisplayDevices(sourceName, 0, ...)` 拿到的是 monitor 而非 adapter；adapter 名稱錯誤連帶導致 driver 版本比對不到正確的 class GUID。
+- 規格的「GPU/audio driver details」「differences across PCs can be investigated」目的仍未達成。
+
+**建議**：故事 67 需要直接呼叫 `SetupDiGetDevicePropertyW`（PowerShell 用的 API）而非 `CM_*`，搭配從 SetupAPI 取得 SWD\MMDEVAPI 端點的對應 PnP 節點；放棄重構已知可用的 `EnumDisplayDevices` 鏈。
 
 ### Story 55 — SVCL 版號解讀為推測邏輯
 
