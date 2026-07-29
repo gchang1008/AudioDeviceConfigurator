@@ -33,10 +33,18 @@ public sealed class SystemFileSystem : IFileSystem
 
     public string? GetFileVersion(string path)
     {
+        // NirSoft's VERSION_INFO stores both FileVersion and ProductVersion as the literal string
+        // "1.28"; the structured fields are filled as (1,2,8,0) instead. The product string is what
+        // the spec asks for ("SVCL 1.28 or newer"), so prefer it when present.
         var info = FileVersionInfo.GetVersionInfo(path);
+        if (!string.IsNullOrEmpty(info.ProductVersion))
+        {
+            return info.ProductVersion;
+        }
+
         if (info.FileMajorPart == 0 && info.FileMinorPart == 0 && info.FileBuildPart == 0)
         {
-            return info.FileVersion;
+            return string.IsNullOrEmpty(info.FileVersion) ? null : info.FileVersion;
         }
 
         return $"{info.FileMajorPart}.{info.FileMinorPart}.{info.FileBuildPart}.{info.FilePrivatePart}";

@@ -441,9 +441,8 @@ public class SvclDeploymentTests
 
     [Theory]
     [InlineData("1.28.0.0")]
-    [InlineData("1.2.8.0")]  // NirSoft ships v1.28 with this file version
     [InlineData("1.30.0.0")]
-    [InlineData("1.3.0.0")]  // v1.30
+    [InlineData("2.0.0.0")]
     public void Accepts_a_svcl_version_at_or_above_the_minimum(string version)
     {
         var h = new AppHarness()
@@ -456,8 +455,7 @@ public class SvclDeploymentTests
 
     [Theory]
     [InlineData("1.27.0.0")]
-    [InlineData("1.2.7.0")]  // v1.27
-    [InlineData("1.2.0.0")]  // v1.20
+    [InlineData("1.20.0.0")]
     public void Rejects_a_svcl_version_below_the_minimum(string version)
     {
         var h = new AppHarness()
@@ -482,7 +480,7 @@ public class SvclDeploymentTests
         var exit = h.Run();
 
         Assert.Equal(ExitCode.SystemError, exit);
-        Assert.Contains("Unable to read the file version", h.ErrorText);
+        Assert.Contains("Unable to read the product version", h.ErrorText);
     }
 
     [Fact]

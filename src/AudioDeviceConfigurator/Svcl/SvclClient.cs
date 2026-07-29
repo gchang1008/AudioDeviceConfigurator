@@ -47,32 +47,13 @@ public sealed class SvclClient(
         DetectedVersion = version;
         if (version is null)
         {
-            throw new SvclException($"Unable to read the file version of {svclPath}. SVCL {MinimumVersion} or newer is required.");
+            throw new SvclException($"Unable to read the product version of {svclPath}. SVCL {MinimumVersion} or newer is required.");
         }
 
-        if (CompareVersions(NormalizeNirsoftVersion(version), MinimumVersion) < 0)
+        if (CompareVersions(version, MinimumVersion) < 0)
         {
             throw new SvclException($"svcl.exe version {version} is older than the required {MinimumVersion}.");
         }
-    }
-
-    /// <summary>
-    /// NirSoft ships v1.28 with the file version "1.2.8.0", so the second and third components
-    /// together form the product minor version. "1.2.8.0" becomes "1.28" and "1.3.0.0" becomes "1.30".
-    /// </summary>
-    public static string NormalizeNirsoftVersion(string fileVersion)
-    {
-        var parts = fileVersion.Split('.');
-        if (parts.Length < 3
-            || !int.TryParse(parts[0], out var major)
-            || !int.TryParse(parts[1], out var minor)
-            || !int.TryParse(parts[2], out var build))
-        {
-            return fileVersion;
-        }
-
-        // A minor component of 10 or more is already a full product minor version (e.g. "1.28.0.0").
-        return minor >= 10 ? $"{major}.{minor}" : $"{major}.{minor}{build}";
     }
 
     /// <summary>Reads the current default format of the endpoint via /SaveDeviceFormat.</summary>
