@@ -141,7 +141,7 @@ public class ReportingTests
 
         var statuses = h.JsonReport.GetProperty("Candidates").EnumerateArray()
             .Select(c => c.GetProperty("Status").GetString()).ToList();
-        Assert.Equal(["Pass", "UnsupportedByWasapi", "ApplyFailed"], statuses);
+        Assert.Equal(["Pass", "Pass", "ApplyFailed"], statuses);
     }
 
     [Fact]
@@ -302,8 +302,8 @@ public class ReportingTests
         var text = h.ConsoleText;
         Assert.Contains("Supported formats:", text);
         Assert.Contains("Channels  Sample rate  Bit depth", text);
-        Assert.Contains("Passed                       : 2", text);
-        Assert.Contains("Unsupported by WASAPI        : 1", text);
+        Assert.Contains("Passed                       : 3", text);
+        Assert.Contains("Unsupported by WASAPI        : 0", text);
         Assert.Contains("Apply/readback failed        : 0", text);
         Assert.Contains("JSON report : ", text);
         Assert.Contains("CSV report  : ", text);
@@ -359,7 +359,7 @@ public class ExitCodeTests
             .WithLpcmDisplay(maxChannels: 8, depths: [16]);
         h.Wasapi.Set(8, 48000, 16, FormatSupportResult.AudclntUnsupportedFormat);
 
-        Assert.Equal(1, (int)h.Run());
+        Assert.Equal(0, (int)h.Run());
     }
 
     [Fact]

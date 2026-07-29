@@ -203,21 +203,24 @@ public sealed class WasapiFormatProbe : IWasapiFormatProbe
         }
     }
 
-    /// <summary>Builds a WAVEFORMATEXTENSIBLE describing the candidate PCM format.</summary>
+    /// <summary>Builds a WAVEFORMATEX or WAVEFORMATEXTENSIBLE describing the candidate PCM format.</summary>
     private static IntPtr BuildFormatBuffer(Domain.WaveFormat format)
     {
-        const int size = 40;
+        var size = format.Extensible ? 40 : 18;
         var bytes = new byte[size];
-        BitConverter.GetBytes((ushort)0xFFFE).CopyTo(bytes, 0);                     // wFormatTag
+        BitConverter.GetBytes((ushort)(format.Extensible ? 0xFFFE : 0x0001)).CopyTo(bytes, 0); // wFormatTag
         BitConverter.GetBytes((ushort)format.Channels).CopyTo(bytes, 2);
         BitConverter.GetBytes((uint)format.SampleRate).CopyTo(bytes, 4);
         BitConverter.GetBytes((uint)format.AverageBytesPerSecond).CopyTo(bytes, 8);
         BitConverter.GetBytes((ushort)format.BlockAlign).CopyTo(bytes, 12);
         BitConverter.GetBytes((ushort)format.ContainerBits).CopyTo(bytes, 14);
-        BitConverter.GetBytes((ushort)22).CopyTo(bytes, 16);                        // cbSize
-        BitConverter.GetBytes((ushort)format.ValidBits).CopyTo(bytes, 18);
-        BitConverter.GetBytes(format.ChannelMask).CopyTo(bytes, 20);
-        KsDataFormatSubtypePcm.ToByteArray().CopyTo(bytes, 24);
+        if (format.Extensible)
+        {
+            BitConverter.GetBytes((ushort)22).CopyTo(bytes, 16);                        // cbSize
+            BitConverter.GetBytes((ushort)format.ValidBits).CopyTo(bytes, 18);
+            BitConverter.GetBytes(format.ChannelMask).CopyTo(bytes, 20);
+            KsDataFormatSubtypePcm.ToByteArray().CopyTo(bytes, 24);
+        }
 
         var buffer = Marshal.AllocHGlobal(size);
         Marshal.Copy(bytes, 0, buffer, size);

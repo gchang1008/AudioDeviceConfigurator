@@ -50,7 +50,7 @@ public class RestorationTests
 
         var exit = h.Run();
 
-        Assert.Equal(ExitCode.FormatMismatch, exit);
+        Assert.Equal(ExitCode.Pass, exit);
         Assert.Equal((2, 44100, 16), h.Svcl.CurrentFormat);
     }
 
@@ -229,7 +229,7 @@ public class RestorationTests
     }
 
     [Fact]
-    public void Does_not_attempt_restoration_when_nothing_was_modified()
+    public void Restores_after_wasapi_reports_unsupported()
     {
         var h = new AppHarness()
             .WithEndpoint()
@@ -238,8 +238,8 @@ public class RestorationTests
 
         var exit = h.Run();
 
-        Assert.Equal(ExitCode.FormatMismatch, exit);
-        Assert.Empty(h.Svcl.SetCommands);
+        Assert.Equal(ExitCode.Pass, exit);
+        Assert.NotEmpty(h.Svcl.SetCommands);
     }
 
     [Fact]

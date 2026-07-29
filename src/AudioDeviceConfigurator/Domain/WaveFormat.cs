@@ -16,6 +16,11 @@ public sealed record WaveFormat(
 
     public int AverageBytesPerSecond => SampleRate * BlockAlign;
 
+    public bool CanRepresentAsWaveFormatEx =>
+        Channels == 2
+        && ContainerBits == ValidBits
+        && ContainerBits is 8 or 16 or 24 or 32;
+
     public override string ToString() =>
         $"{Channels} ch, {ValidBits} bit, {SampleRate} Hz";
 }

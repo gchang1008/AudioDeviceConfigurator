@@ -48,12 +48,13 @@ Every run writes timestamped JSON and CSV reports under a `Reports` directory ne
 26. As a tester, I want 24-bit candidates represented with a 32-bit container and 24 valid bits, so that they match the selected common Windows representation.
 27. As a tester, I want 32, 44.1, 48, 88.2, 96, 176.4, and 192 kHz considered only when the EDID advertises them, so that the matrix is complete but constrained.
 28. As a tester, I want candidates sorted from lower to higher channel count, sample rate, and bit depth, so that console and report results are predictable.
-29. As a tester, I want every candidate queried through WASAPI Exclusive mode, so that the result reflects direct endpoint/driver format support rather than shared-mode conversion.
-30. As a tester, I want the exact WASAPI HRESULT recorded for every candidate, so that unsupported formats and system errors can be diagnosed.
-31. As a tester, I want combinations that do not receive `S_OK` skipped by SVCL, so that the tool does not modify settings for formats the driver has rejected.
-32. As a tester, I want every WASAPI-supported candidate applied through SVCL, so that declared support is also checked against Windows default-format configurability.
-33. As a tester, I want the applied format read from SVCL's saved raw format structure, so that validation does not depend on localized Control Panel text.
-34. As a tester, I want effective bit depth read separately from container bit depth for WAVEFORMATEXTENSIBLE, so that 24 valid bits in a 32-bit container are reported as 24-bit.
+29. As a tester, I want every EDID candidate queried through WASAPI Exclusive mode using WAVEFORMATEXTENSIBLE, and plain WAVEFORMATEX as a second diagnostic query when the lossless stereo PCM format is representable, so both Windows structures are observable.
+30. As a tester, I want the exact HRESULT and result recorded separately for plain and extensible WASAPI queries, so format-structure differences are diagnosable.
+31. As a tester, I want multi-channel and packed-depth formats (20-in-24 and 24-in-32) queried only as WAVEFORMATEXTENSIBLE, because plain WAVEFORMATEX cannot represent their valid-bit layout.
+32. As a tester, I want EDID declaration and SVCL apply/readback to determine the final candidate result, so WASAPI false negatives remain diagnostic evidence and do not block a valid applied format.
+33. As a tester, I want every EDID candidate applied through SVCL, so declared support is also checked against Windows default-format configurability.
+34. As a tester, I want the applied format read from SVCL's saved raw format structure, so validation does not depend on localized Control Panel text.
+35. As a tester, I want effective bit depth read separately from container bit depth for WAVEFORMATEXTENSIBLE, so that 24 valid bits in a 32-bit container are reported as 24-bit.
 35. As a tester, I want ordinary WAVEFORMATEX formats to use their container bit depth as effective bit depth, so that formats without a separate valid-bit field are interpreted correctly.
 36. As a tester, I want the tool to poll every 200 milliseconds for up to three seconds after setting a format, so that slower drivers are not falsely failed.
 37. As a tester, I want effective bit depth, sample rate, and channel count to match exactly, so that partial or substituted changes do not pass.
@@ -122,14 +123,14 @@ Every run writes timestamped JSON and CSV reports under a `Reports` directory ne
 - Format construction uses PCM WAVEFORMATEXTENSIBLE where required. The selected representations are 16 container/16 valid, 24 container/20 valid, and 32 container/24 valid bits.
 - Standard channel masks will be used for 2-, 6-, and 8-channel WASAPI queries. The application will not modify Windows Speakers Config.
 - Candidates are ordered by channel count, sample rate, and effective bit depth from low to high.
-- The WASAPI query mode is Exclusive only. `IAudioClient::IsFormatSupported` returning `S_OK` is required before an SVCL modification is attempted.
-- WASAPI unsupported results and other HRESULTs are recorded separately. A non-`S_OK` candidate is not passed to SVCL.
+- The WASAPI query mode is Exclusive only. Every EDID candidate receives an extensible query; lossless stereo formats whose container and valid bits match receive an additional plain WAVEFORMATEX query.
+- Plain and extensible WASAPI HRESULTs/results are retained separately. Multi-channel, 20-in-24, and 24-in-32 candidates are extensible-only. WASAPI results are diagnostic and do not gate SVCL apply/readback.
 - The tool requires `svcl.exe` version 1.28 or newer in the application directory.
 - Before modification, `/SaveDeviceFormat` captures the original raw default format. The tool parses WAVEFORMATEX and WAVEFORMATEXTENSIBLE, retaining format tag, container bits, valid bits, rate, channels, channel mask, and raw bytes.
 - `/SetDefaultFormat` receives effective bit depth, sample rate, and channel count. `/SetSpeakersConfig` is never called.
 - After setting, the application polls `/SaveDeviceFormat` every 200 ms for up to three seconds. Readback effective bit depth, sample rate, and channel count must exactly equal the candidate.
 - SVCL process exit code, stdout, and stderr are diagnostic inputs. A zero process exit code is not proof of successful application. `No items found`, absence of an expected saved file, malformed data, timeout, or mismatched readback causes the apply stage to fail.
-- A candidate passes only if EDID declared it, WASAPI Exclusive returned `S_OK`, and SVCL readback matched all three requested values.
+- A candidate passes only if EDID declared it and SVCL readback matched all three requested values; WASAPI results remain diagnostic evidence.
 - Every EDID-derived candidate must pass for overall PASS. Any candidate-level unsupported or apply mismatch produces overall FAIL unless a higher-priority system error occurs.
 - The original format is restored after the full run. After a failed apply/readback, it is restored and verified before testing continues. Successful candidates can proceed directly to the next candidate.
 - Restoration is attempted on normal completion, handled exceptions, and Ctrl+C. If restoration or restore verification fails, testing stops and the overall result is a system error. Forced process termination, OS crash, or power loss cannot be guaranteed recoverable.
@@ -148,7 +149,7 @@ Every run writes timestamped JSON and CSV reports under a `Reports` directory ne
 - EDID parser behavior will be exercised through the CLI seam using complete binary fixtures. Fixtures cover valid base-plus-CTA EDID, multiple CTA blocks, duplicate SADs, LPCM and non-LPCM descriptors, every supported rate/depth bit, maximum channel counts, invalid header, truncated blocks, extension-count mismatch, and checksum failures in every block position.
 - Candidate generation tests will verify SAD-scoped combinations, 2/6/8 channel filtering, deduplication, source traceability, selected valid/container representations, standard channel masks, and ascending deterministic ordering.
 - Pairing tests will cover unique automatic mapping, ambiguous interactive selection, cancellation, explicit IDs, unknown IDs, inactive displays/endpoints, same-model monitors, and default endpoint selection.
-- WASAPI tests will cover `S_OK`, unsupported-format HRESULT, device/system HRESULT, and mixed matrices. They will verify SVCL is never called for non-`S_OK` candidates.
+- WASAPI tests will cover both plain and extensible queries for lossless stereo PCM, extensible-only queries for multi-channel and packed-depth formats, exact HRESULT capture, and mixed matrices. They will verify SVCL apply/readback remains authoritative even for non-`S_OK` diagnostics.
 - SVCL workflow tests will cover minimum-version enforcement, missing package files, `No items found` with exit code 0, nonzero exit, missing save output, malformed WAVEFORMATEX, malformed WAVEFORMATEXTENSIBLE, delayed readback, exact match, substituted bit depth/rate/channels, and timeout.
 - Format parsing tests through the CLI will distinguish a 32-bit container with 24 valid bits from a true 32-bit effective format and a 24-bit container with 20 valid bits.
 - State restoration tests will verify original capture before modification; final restore after pass and fail; immediate restore after an apply failure; continued testing only after verified restoration; restore on handled exception and Ctrl+C; and immediate abort with exit code 2 when restoration fails.

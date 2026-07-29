@@ -8,6 +8,41 @@ namespace AudioDeviceConfigurator.Tests;
 public class WorkflowTests
 {
     [Fact]
+    public void Queries_plain_and_extensible_for_lossless_stereo_pcm_and_reports_both_results()
+    {
+        var h = new AppHarness()
+            .WithEndpoint()
+            .WithLpcmDisplay(maxChannels: 2, depths: [16]);
+        h.Wasapi.Set(2, 48000, 16, FormatSupportResult.SOk);
+
+        Assert.Equal(ExitCode.Pass, h.Run());
+
+        Assert.Equal(2, h.Wasapi.Queries.Count);
+        Assert.Contains(h.Wasapi.Queries, f => !f.Extensible && f.ContainerBits == 16 && f.ValidBits == 16);
+        Assert.Contains(h.Wasapi.Queries, f => f.Extensible && f.ContainerBits == 16 && f.ValidBits == 16);
+        var candidate = h.JsonReport.GetProperty("Candidates")[0];
+        Assert.Equal("Supported", candidate.GetProperty("PlainWasapiResult").GetString());
+        Assert.Equal("0x00000000", candidate.GetProperty("PlainWasapiHResult").GetString());
+        Assert.Equal("Supported", candidate.GetProperty("ExtensibleWasapiResult").GetString());
+        Assert.Equal("0x00000000", candidate.GetProperty("ExtensibleWasapiHResult").GetString());
+    }
+
+    [Fact]
+    public void Queries_only_extensible_for_multichannel_and_packed_depths()
+    {
+        var h = new AppHarness()
+            .WithEndpoint()
+            .WithLpcmDisplay(maxChannels: 6, depths: [16, 20, 24]);
+
+        h.Run();
+
+        Assert.DoesNotContain(h.Wasapi.Queries, f => !f.Extensible && (f.Channels != 2 || f.ValidBits != 16));
+        Assert.Contains(h.Wasapi.Queries, f => f.Channels == 6);
+        Assert.Contains(h.Wasapi.Queries, f => f.Channels == 2 && f.ValidBits == 16 && !f.Extensible);
+        Assert.DoesNotContain(h.Wasapi.Queries, f => f.Channels == 2 && f.ValidBits != 16 && !f.Extensible);
+    }
+
+    [Fact]
     public void Passes_when_every_edid_declared_format_is_supported_and_applied()
     {
         var h = new AppHarness()
@@ -58,8 +93,8 @@ public class WorkflowTests
 
         var exit = h.Run();
 
-        Assert.Equal(ExitCode.FormatMismatch, exit);
-        Assert.DoesNotContain(h.Svcl.AppliedFormats, f => f.Channels == 6);
+        Assert.Equal(ExitCode.Pass, exit);
+        Assert.Contains(h.Svcl.AppliedFormats, f => f.Channels == 6);
         Assert.Contains(h.Svcl.AppliedFormats, f => f.Channels == 2);
         Assert.Contains(h.Svcl.AppliedFormats, f => f.Channels == 8);
     }
@@ -74,11 +109,11 @@ public class WorkflowTests
 
         var exit = h.Run();
 
-        Assert.Equal(ExitCode.FormatMismatch, exit);
+        Assert.Equal(ExitCode.Pass, exit);
         var candidate = h.JsonReport.GetProperty("Candidates")[0];
         Assert.Equal("0x8889000A", candidate.GetProperty("WasapiHResult").GetString());
         Assert.Equal("Error", candidate.GetProperty("WasapiResult").GetString());
-        Assert.Equal("WasapiError", candidate.GetProperty("Status").GetString());
+        Assert.Equal("Pass", candidate.GetProperty("Status").GetString());
     }
 
     [Fact]
@@ -93,8 +128,8 @@ public class WorkflowTests
 
         var candidate = h.JsonReport.GetProperty("Candidates")[0];
         Assert.Equal("Unsupported", candidate.GetProperty("WasapiResult").GetString());
-        Assert.Equal("UnsupportedByWasapi", candidate.GetProperty("Status").GetString());
-        Assert.Equal("Skipped", candidate.GetProperty("ApplyResult").GetString());
+        Assert.Equal("Pass", candidate.GetProperty("Status").GetString());
+        Assert.Equal("Matched", candidate.GetProperty("ApplyResult").GetString());
     }
 
     [Fact]

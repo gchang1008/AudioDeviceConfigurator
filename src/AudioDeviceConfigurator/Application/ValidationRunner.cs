@@ -225,25 +225,16 @@ public sealed class ValidationRunner(AppEnvironment env, CancellationToken cance
     {
         needsRestore = false;
 
-        var support = env.Wasapi.IsExclusiveFormatSupported(_endpointReport!.EndpointId, candidate.Format);
-        if (!support.IsSupported)
-        {
-            var isUnsupported = support.HResult == FormatSupportResult.AudclntUnsupportedFormat;
-            return BuildReport(
-                index,
-                candidate,
-                isUnsupported ? WasapiStageResult.Unsupported : WasapiStageResult.Error,
-                support.HResultText,
-                ApplyStageResult.Skipped,
-                readback: null,
-                elapsed: null,
-                failure: isUnsupported
-                    ? "WASAPI Exclusive mode reported the format as unsupported."
-                    : $"WASAPI Exclusive format query returned {support.HResultText}.",
-                status: isUnsupported ? CandidateStatus.UnsupportedByWasapi : CandidateStatus.WasapiError);
-        }
+        var extensibleSupport = env.Wasapi.IsExclusiveFormatSupported(_endpointReport!.EndpointId, candidate.Format);
+        var extensibleResult = ToWasapiStageResult(extensibleSupport);
+        var plainSupport = candidate.Format.CanRepresentAsWaveFormatEx
+            ? env.Wasapi.IsExclusiveFormatSupported(
+                _endpointReport.EndpointId,
+                candidate.Format with { Extensible = false })
+            : null;
+        var plainResult = plainSupport is null ? WasapiStageResult.NotRun : ToWasapiStageResult(plainSupport);
 
-        // Only S_OK candidates are allowed to change any system setting.
+        // WASAPI is diagnostic only. EDID and SVCL apply/readback determine the final verdict.
         needsRestore = true;
         _formatModified = true;
         string? failure = null;
@@ -275,8 +266,10 @@ public sealed class ValidationRunner(AppEnvironment env, CancellationToken cance
         return BuildReport(
             index,
             candidate,
-            WasapiStageResult.Supported,
-            support.HResultText,
+            extensibleResult,
+            extensibleSupport.HResultText,
+            plainResult,
+            plainSupport?.HResultText ?? "",
             applyResult,
             readback,
             elapsed,
@@ -407,6 +400,8 @@ public sealed class ValidationRunner(AppEnvironment env, CancellationToken cance
                 candidates[i],
                 WasapiStageResult.NotRun,
                 "",
+                WasapiStageResult.NotRun,
+                "",
                 ApplyStageResult.NotRun,
                 readback: null,
                 elapsed: null,
@@ -415,11 +410,20 @@ public sealed class ValidationRunner(AppEnvironment env, CancellationToken cance
         }
     }
 
+    private static WasapiStageResult ToWasapiStageResult(FormatSupportResult support) =>
+        support.IsSupported
+            ? WasapiStageResult.Supported
+            : support.HResult == FormatSupportResult.AudclntUnsupportedFormat
+                ? WasapiStageResult.Unsupported
+                : WasapiStageResult.Error;
+
     private static CandidateReport BuildReport(
         int index,
         CandidateFormat candidate,
         WasapiStageResult wasapi,
         string hresult,
+        WasapiStageResult plainWasapi,
+        string plainHresult,
         ApplyStageResult apply,
         SavedFormat? readback,
         double? elapsed,
@@ -435,6 +439,10 @@ public sealed class ValidationRunner(AppEnvironment env, CancellationToken cance
             SourceSadReferences: candidate.SourceSadReferences,
             WasapiResult: wasapi,
             WasapiHResult: hresult,
+            PlainWasapiResult: plainWasapi,
+            PlainWasapiHResult: plainHresult,
+            ExtensibleWasapiResult: wasapi,
+            ExtensibleWasapiHResult: hresult,
             ApplyResult: apply,
             ReadbackSummary: readback?.ToString(),
             ReadbackChannels: readback?.Channels,

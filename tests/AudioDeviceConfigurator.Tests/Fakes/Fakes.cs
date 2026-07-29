@@ -30,18 +30,28 @@ public sealed class FakeWasapiProbe : IWasapiFormatProbe
 
     public List<WaveFormat> Queries { get; } = [];
 
-    public static string Key(int channels, int rate, int validBits) => $"{channels}/{rate}/{validBits}";
+    public static string Key(int channels, int rate, int validBits, bool extensible = true) =>
+        $"{channels}/{rate}/{validBits}/{extensible}";
 
-    public FakeWasapiProbe Set(int channels, int rate, int validBits, int hresult)
+    public FakeWasapiProbe Set(int channels, int rate, int validBits, int hresult, bool? extensible = null)
     {
-        _overrides[Key(channels, rate, validBits)] = hresult;
+        if (extensible is null)
+        {
+            _overrides[Key(channels, rate, validBits, true)] = hresult;
+            _overrides[Key(channels, rate, validBits, false)] = hresult;
+        }
+        else
+        {
+            _overrides[Key(channels, rate, validBits, extensible.Value)] = hresult;
+        }
+
         return this;
     }
 
     public FormatSupportResult IsExclusiveFormatSupported(string endpointId, WaveFormat format)
     {
         Queries.Add(format);
-        var key = Key(format.Channels, format.SampleRate, format.ValidBits);
+        var key = Key(format.Channels, format.SampleRate, format.ValidBits, format.Extensible);
         return new FormatSupportResult(_overrides.TryGetValue(key, out var hr) ? hr : DefaultHResult);
     }
 }
