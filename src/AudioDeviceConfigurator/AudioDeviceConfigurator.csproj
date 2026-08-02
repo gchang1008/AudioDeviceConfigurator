@@ -29,4 +29,11 @@
     <InternalsVisibleTo Include="AudioDeviceConfigurator.Tests" />
   </ItemGroup>
 
+  <ItemGroup>
+    <None Include="..\..\test_audio.wav" Link="test_audio.wav">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+    </None>
+  </ItemGroup>
+
 </Project>

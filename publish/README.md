@@ -10,16 +10,29 @@ Keep these files together in a writable folder:
 
 - `AudioDeviceConfigurator.exe`
 - `svcl.exe` (SVCL 1.28 or newer)
+- `test_audio.wav` (used by the GUI for loop-back verification)
 
 ```cmd
 AudioDeviceConfigurator.exe
 AudioDeviceConfigurator.exe --list
 AudioDeviceConfigurator.exe --device-id "{0.0.0.00000000}.{...}"
+AudioDeviceConfigurator.exe --cli     # force the interactive CLI
 ```
 
-With no options, the application configures the current default active playback endpoint. Use `--list` to obtain endpoint IDs and `--device-id` to configure another active endpoint.
+Double-clicking `AudioDeviceConfigurator.exe` (or running it with no arguments) launches the WPF main window. The CLI is the default whenever any of `--help`, `--list`, `--device-id`, or `--cli` is supplied, and when stdout is redirected.
 
-## Workflow
+## GUI workflow
+
+The window lists every active render endpoint discovered through Core Audio. Selecting an endpoint reloads its speaker-channel and Default Format items from the legacy Sound Control Panel. After Apply verifies a successful switch through `svcl.exe`, the GUI immediately loops `test_audio.wav` through the selected endpoint in WASAPI Shared Mode so you can hear whether the new format is in effect.
+
+- **Apply** is locked while a switch or playback is in progress.
+- **Play** is enabled only after a verified switch, and only when nothing is currently playing.
+- **Stop** releases the WASAPI stream; **Apply** auto-stops any active stream first.
+- Closing the window always stops playback and releases the WASAPI resources.
+- Playback errors are surfaced in the status line and **never** roll back a verified audio configuration.
+- The legacy Sound, Properties, and Speaker Setup windows opened during enumeration are closed automatically.
+
+## CLI workflow
 
 1. Enumerates active playback endpoints through Windows Core Audio.
 2. Opens the legacy Sound Control Panel and reads available speaker configurations and Default Format items without changing them.
@@ -38,7 +51,8 @@ For 4 channels, the application uses the standard Quadraphonic mask (`0x33`). Th
 ```text
 AudioDeviceConfigurator [options]
 
-(no options)          Configure the current default active render endpoint interactively.
+(no options)          Launch the WPF GUI.
+--cli                 Force the interactive CLI flow (default when --list / --device-id / --help is present).
 --device-id <id>      Configure a specific active render endpoint by endpoint ID.
 --list                List active render endpoints, then exit without changes.
 --help, -h            Show full help and exit.
@@ -48,7 +62,7 @@ AudioDeviceConfigurator [options]
 
 - Briefly opens the legacy Sound Control Panel, speaker setup page, and endpoint Properties dialog.
 - A confirmed operation permanently changes the selected endpoint's speaker configuration and Default Format.
-- Does not change the default playback endpoint and does not play audio.
+- Does not change the default playback endpoint.
 - Only closes Control Panel windows created by the current run.
 - Requires an interactive, unlocked Windows desktop session.
 - Do not interact with the Sound Control Panel while enumeration runs.
@@ -70,3 +84,4 @@ AudioDeviceConfigurator [options]
 - `--device-id` is passed unchanged to SVCL and probed with `/SaveDeviceFormat`; no fallback to another endpoint occurs.
 - Unparsed Control Panel text is displayed but cannot be selected for SVCL.
 - Reads and configures one endpoint per run.
+- GUI playback requires the endpoint's WASAPI mix format to match `test_audio.wav` exactly; mismatched endpoints surface an error and leave the verified audio settings in place.
