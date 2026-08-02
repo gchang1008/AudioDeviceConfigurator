@@ -9,7 +9,6 @@
     <SelfContained>true</SelfContained>
     <PublishSingleFile>true</PublishSingleFile>
     <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
-    <InvariantGlobalization>true</InvariantGlobalization>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <AssemblyName>AudioDeviceConfigurator</AssemblyName>
     <RootNamespace>AudioDeviceConfigurator</RootNamespace>
