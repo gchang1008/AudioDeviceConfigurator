@@ -14,14 +14,10 @@ public sealed record AppEnvironment(
     IControlPanelFormatProvider ControlPanelFormats,
     ISvclClient Svcl);
 
-/// <summary>Configures a selected endpoint from its Control Panel options.</summary>
+/// <summary>Drives the interactive CLI on top of the shared device configuration service.</summary>
 public sealed class ValidationRunner(AppEnvironment env, CancellationToken cancellationToken = default)
 {
     private ControlPanelFormatResult? _controlPanelFormats;
-    private int? _selectedChannels;
-    private ControlPanelFormatItem? _selectedFormat;
-    private SavedFormat? _before;
-    private string? _deviceToken;
 
     public ExitCode Run(CliOptions options)
     {
@@ -97,38 +93,34 @@ public sealed class ValidationRunner(AppEnvironment env, CancellationToken cance
     private ExitCode Execute(CliOptions options)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        var endpoint = ResolveEndpoint(env.Endpoints.GetActiveRenderEndpoints(), options.DeviceId);
+        var endpoints = env.Endpoints.GetActiveRenderEndpoints();
+        var endpoint = ResolveEndpoint(endpoints, options.DeviceId);
 
         env.Console.WriteLine($"Endpoint : {endpoint.FriendlyName}");
         env.Console.WriteLine($"           {endpoint.EndpointId}");
         env.Console.WriteLine();
 
-        var result = env.ControlPanelFormats.ReadDefaultFormats(endpoint, TimeSpan.FromSeconds(30));
-        _controlPanelFormats = result;
-        env.Console.WriteLine($"Control Panel formats: {result.Items.Count}");
-
-        var channels = result.SpeakerConfigurations
-            .Select(item => item.Channels)
-            .Where(value => value is 2 or 4 or 6 or 8)
-            .Distinct()
-            .ToArray();
-        var formats = result.Items
-            .Where(item => item.ParseStatus == ControlPanelParseStatus.Parsed
-                           && item.EffectiveBits.HasValue
-                           && item.SampleRate.HasValue)
-            .ToArray();
-        if (channels.Length == 0 || formats.Length == 0)
+        var service = new DeviceConfigurationService(env.Endpoints, env.ControlPanelFormats, env.Svcl);
+        var catalog = service.GetOptionsAsync(endpoint, cancellationToken).GetAwaiter().GetResult();
+        if (catalog is EndpointOptionsResult.NotApplicable)
         {
             return ExitCode.NotApplicable;
         }
 
-        _selectedChannels = Select("speaker channel count", channels, value => $"{value} channels");
-        _selectedFormat = Select("audio format", formats, item => item.DisplayText);
+        var options_available = ((EndpointOptionsResult.Available)catalog).Options;
+        _controlPanelFormats = env.ControlPanelFormats.ReadDefaultFormats(
+            endpoint, TimeSpan.FromSeconds(30));
+
+        var channels = options_available.Channels;
+        var formats = options_available.Formats;
+
+        var selectedChannels = Select("speaker channel count", channels, value => $"{value} channels");
+        var selectedFormat = Select("audio format", formats, item => item.DisplayText);
 
         env.Console.WriteLine();
         env.Console.WriteLine("Selected settings:");
-        env.Console.WriteLine($"  Speaker channels : {_selectedChannels}");
-        env.Console.WriteLine($"  Audio format     : {_selectedFormat.DisplayText}");
+        env.Console.WriteLine($"  Speaker channels : {selectedChannels}");
+        env.Console.WriteLine($"  Audio format     : {selectedFormat.DisplayText}");
         env.Console.WriteLine("Apply these settings? [Y/n]");
         var confirmation = env.Console.ReadLine()?.Trim();
         if (confirmation is null
@@ -138,86 +130,40 @@ public sealed class ValidationRunner(AppEnvironment env, CancellationToken cance
             throw new OperationCanceledException();
         }
 
-        return ApplyAndVerify(endpoint);
-    }
-
-    private ExitCode ApplyAndVerify(EndpointInfo endpoint)
-    {
-        cancellationToken.ThrowIfCancellationRequested();
-        _deviceToken = endpoint.EndpointId;
-        env.Svcl.VerifyInstallation();
-        _before = env.Svcl.SaveDeviceFormat(_deviceToken);
-        if (_before.ChannelMask == 0)
+        var formatIndex = options_available.IndexOfFormat(selectedFormat);
+        var outcome = service.ApplyAsync(endpoint, selectedChannels, formatIndex, cancellationToken).GetAwaiter().GetResult();
+        switch (outcome.Status)
         {
-            throw new InvalidOperationException(
-                "The original speaker channel mask is unavailable; no settings were changed.");
-        }
-
-        var settersStarted = false;
-        try
-        {
-            settersStarted = true;
-            env.Svcl.SetSpeakersConfig(_deviceToken, _selectedChannels!.Value);
-            cancellationToken.ThrowIfCancellationRequested();
-            env.Svcl.SetDefaultFormat(
-                _deviceToken,
-                _selectedFormat!.EffectiveBits!.Value,
-                _selectedFormat.SampleRate!.Value,
-                _selectedChannels.Value);
-            cancellationToken.ThrowIfCancellationRequested();
-            env.Clock.Sleep(TimeSpan.FromMilliseconds(500));
-            cancellationToken.ThrowIfCancellationRequested();
-            var after = env.Svcl.SaveDeviceFormat(_deviceToken);
-            cancellationToken.ThrowIfCancellationRequested();
-
-            if (!Matches(after, _selectedChannels.Value,
-                    _selectedFormat.EffectiveBits.Value,
-                    _selectedFormat.SampleRate.Value,
-                    SvclClient.GetSpeakerMask(_selectedChannels.Value)))
-            {
-                throw new SwitchMismatchException("The SVCL readback does not match the selected settings.");
-            }
-
-            env.Console.WriteLine();
-            env.Console.WriteLine("Switch completed and verified. The selected settings remain active.");
-            return ExitCode.Pass;
-        }
-        catch (Exception ex) when (settersStarted)
-        {
-            env.Console.WriteError($"ERROR: {ex.Message}");
-            return RollBack(ex switch
-            {
-                OperationCanceledException => ExitCode.Cancelled,
-                SwitchMismatchException => ExitCode.FormatMismatch,
-                _ => ExitCode.SystemError,
-            });
+            case SwitchStatus.Pass:
+                env.Console.WriteLine();
+                env.Console.WriteLine("Switch completed and verified. The selected settings remain active.");
+                return ExitCode.Pass;
+            case SwitchStatus.FormatMismatch:
+                if (outcome.RollbackVerified)
+                {
+                    env.Console.WriteLine("Original settings were restored and verified.");
+                }
+                return ExitCode.FormatMismatch;
+            case SwitchStatus.Cancelled:
+                if (outcome.RollbackVerified)
+                {
+                    env.Console.WriteLine("Original settings were restored and verified.");
+                }
+                return ExitCode.Cancelled;
+            case SwitchStatus.NotApplicable:
+                return ExitCode.NotApplicable;
+            case SwitchStatus.SystemError:
+                env.Console.WriteError($"ERROR: {outcome.Message}");
+                return ExitCode.SystemError;
+            default:
+                return ExitCode.SystemError;
         }
     }
 
-    private ExitCode RollBack(ExitCode failureStatus)
+    private ExitCode FailWithMessage(string message)
     {
-        try
-        {
-            env.Svcl.SetSpeakersConfig(_deviceToken!, _before!.ChannelMask);
-            env.Svcl.SetDefaultFormat(
-                _deviceToken!, _before.EffectiveBits, _before.SampleRate, _before.Channels);
-            env.Clock.Sleep(TimeSpan.FromMilliseconds(500));
-            var restored = env.Svcl.SaveDeviceFormat(_deviceToken!);
-            if (!Matches(restored, _before.Channels, _before.EffectiveBits,
-                    _before.SampleRate, _before.ChannelMask))
-            {
-                throw new InvalidOperationException("The original settings did not match after rollback.");
-            }
-
-            env.Console.WriteLine("Original settings were restored and verified.");
-            return failureStatus;
-        }
-        catch (Exception rollbackFailure)
-        {
-            env.Console.WriteError(
-                $"ERROR: Rollback failed; the original settings may not have been completely restored: {rollbackFailure.Message}");
-            return ExitCode.SystemError;
-        }
+        env.Console.WriteError($"ERROR: {message}");
+        return ExitCode.SystemError;
     }
 
     private T Select<T>(string label, IReadOnlyList<T> options, Func<T, string> display)
@@ -247,19 +193,6 @@ public sealed class ValidationRunner(AppEnvironment env, CancellationToken cance
             env.Console.WriteLine("Invalid selection.");
         }
     }
-
-    private static bool Matches(
-        SavedFormat format,
-        int channels,
-        int effectiveBits,
-        int sampleRate,
-        uint channelMask) =>
-        format.Channels == channels
-        && format.EffectiveBits == effectiveBits
-        && format.SampleRate == sampleRate
-        && format.ChannelMask == channelMask;
-
-    private sealed class SwitchMismatchException(string message) : Exception(message);
 
     internal static EndpointInfo ResolveEndpoint(IReadOnlyList<EndpointInfo> endpoints, string? requestedId)
     {
