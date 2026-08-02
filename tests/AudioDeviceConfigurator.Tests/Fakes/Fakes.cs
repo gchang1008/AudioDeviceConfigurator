@@ -1,17 +1,7 @@
 using System.Text;
 using AudioDeviceConfigurator.Abstractions;
-using AudioDeviceConfigurator.Domain;
 
 namespace AudioDeviceConfigurator.Tests.Fakes;
-
-public sealed class FakeDisplayProvider : IDisplayProvider
-{
-    public List<DisplayInfo> Displays { get; } = [];
-    public Exception? ThrowOnGet { get; set; }
-
-    public IReadOnlyList<DisplayInfo> GetActiveDisplays() =>
-        ThrowOnGet is not null ? throw ThrowOnGet : Displays;
-}
 
 public sealed class FakeEndpointProvider : IAudioEndpointProvider
 {
@@ -22,65 +12,32 @@ public sealed class FakeEndpointProvider : IAudioEndpointProvider
     public EndpointInfo? GetDefaultRenderEndpoint() => Endpoints.FirstOrDefault(e => e.IsDefault);
 }
 
-public sealed class FakeWasapiProbe : IWasapiFormatProbe
+public sealed class FakeControlPanelFormatProvider : IControlPanelFormatProvider
 {
-    private readonly Dictionary<string, int> _overrides = new();
+    public List<ControlPanelFormatItem> Items { get; } = [];
+    public List<ControlPanelSpeakerConfigurationItem> SpeakerConfigurations { get; } = [];
+    public List<string> EndpointIds { get; } = [];
+    public EndpointInfo? LastEndpoint { get; private set; }
+    public TimeSpan? Timeout { get; private set; }
 
-    public int DefaultHResult { get; set; } = FormatSupportResult.SOk;
-
-    public List<WaveFormat> Queries { get; } = [];
-
-    public static string Key(int channels, int rate, int validBits, bool extensible = true) =>
-        $"{channels}/{rate}/{validBits}/{extensible}";
-
-    public FakeWasapiProbe Set(int channels, int rate, int validBits, int hresult, bool? extensible = null)
+    public ControlPanelFormatResult ReadDefaultFormats(EndpointInfo endpoint, TimeSpan timeout)
     {
-        if (extensible is null)
-        {
-            _overrides[Key(channels, rate, validBits, true)] = hresult;
-            _overrides[Key(channels, rate, validBits, false)] = hresult;
-        }
-        else
-        {
-            _overrides[Key(channels, rate, validBits, extensible.Value)] = hresult;
-        }
-
-        return this;
-    }
-
-    public FormatSupportResult IsExclusiveFormatSupported(string endpointId, WaveFormat format)
-    {
-        Queries.Add(format);
-        var key = Key(format.Channels, format.SampleRate, format.ValidBits, format.Extensible);
-        return new FormatSupportResult(_overrides.TryGetValue(key, out var hr) ? hr : DefaultHResult);
+        EndpointIds.Add(endpoint.EndpointId);
+        LastEndpoint = endpoint;
+        Timeout = timeout;
+        var maxSupportedChannels = SpeakerConfigurations.Count == 0
+            ? (int?)null
+            : SpeakerConfigurations.Max(item => item.Channels);
+        return new ControlPanelFormatResult(Items, SpeakerConfigurations, maxSupportedChannels,
+            new ControlPanelFormatSnapshot(DateTimeOffset.MinValue, DateTimeOffset.MinValue, "fake", true, true, null));
     }
 }
 
 public sealed class FakeClock : IClock
 {
-    private TimeSpan _elapsed = TimeSpan.Zero;
-
-    public DateTimeOffset LocalNow { get; set; } =
-        new(2026, 7, 28, 14, 30, 0, TimeSpan.FromHours(8));
-
-    public DateTimeOffset UtcNow => LocalNow.ToUniversalTime();
-
-    public TimeSpan Elapsed => _elapsed;
-
     public List<TimeSpan> Sleeps { get; } = [];
 
-    public void Sleep(TimeSpan duration)
-    {
-        Sleeps.Add(duration);
-        _elapsed += duration;
-        LocalNow = LocalNow.Add(duration);
-    }
-
-    public void Advance(TimeSpan duration)
-    {
-        _elapsed += duration;
-        LocalNow = LocalNow.Add(duration);
-    }
+    public void Sleep(TimeSpan duration) => Sleeps.Add(duration);
 }
 
 public sealed class FakeConsole : IConsole
@@ -120,28 +77,24 @@ public sealed class FakeConsole : IConsole
     public string ErrorText => Errors.ToString();
 }
 
-public sealed class FakeSystemInfoProvider : ISystemInfoProvider
+public sealed class FakeProcessRunner(
+    Func<IReadOnlyList<string>, FakeFileSystem, ProcessResult> handler,
+    FakeFileSystem fileSystem) : IProcessRunner
 {
-    public SystemInfo Info { get; set; } = new(
-        MachineName: "TEST-PC",
-        OsDescription: "Microsoft Windows 11 Pro",
-        OsVersion: "10.0.26100",
-        Architecture: "X64",
-        UserName: "tester",
-        ApplicationVersion: "1.0.0");
+    public List<IReadOnlyList<string>> Invocations { get; } = [];
 
-    public SystemInfo GetSystemInfo() => Info;
+    public ProcessResult Run(string executablePath, IReadOnlyList<string> arguments, TimeSpan timeout)
+    {
+        Invocations.Add(arguments.ToArray());
+        return handler(arguments, fileSystem);
+    }
 }
 
-/// <summary>In-memory filesystem so report content and SVCL temp files are fully observable.</summary>
+/// <summary>In-memory filesystem for SVCL executable and temporary format files.</summary>
 public sealed class FakeFileSystem : IFileSystem
 {
     public Dictionary<string, byte[]> Files { get; } = new(StringComparer.OrdinalIgnoreCase);
     public Dictionary<string, string> FileVersions { get; } = new(StringComparer.OrdinalIgnoreCase);
-    public HashSet<string> Directories { get; } = new(StringComparer.OrdinalIgnoreCase);
-    public List<string> CreatedDirectories { get; } = [];
-    public Func<string, Exception?>? WriteFailure { get; set; }
-    public Func<string, Exception?>? CreateDirectoryFailure { get; set; }
 
     private int _tempCounter;
 
@@ -150,43 +103,12 @@ public sealed class FakeFileSystem : IFileSystem
     public byte[] ReadAllBytes(string path) =>
         Files.TryGetValue(path, out var data) ? data : throw new FileNotFoundException(path);
 
-    public void WriteAllText(string path, string contents)
-    {
-        if (WriteFailure?.Invoke(path) is { } ex)
-        {
-            throw ex;
-        }
-
-        Files[path] = Encoding.UTF8.GetBytes(contents);
-    }
-
     public void WriteAllBytes(string path, byte[] data) => Files[path] = data;
 
     public void DeleteFile(string path) => Files.Remove(path);
-
-    public void CreateDirectory(string path)
-    {
-        if (CreateDirectoryFailure?.Invoke(path) is { } ex)
-        {
-            throw ex;
-        }
-
-        Directories.Add(path);
-        CreatedDirectories.Add(path);
-    }
 
     public string? GetFileVersion(string path) =>
         FileVersions.TryGetValue(path, out var version) ? version : null;
 
     public string GetTempFilePath(string suffix) => $@"C:\Temp\svcl-format-{++_tempCounter}{suffix}";
-
-    public string ReadText(string path) => Encoding.UTF8.GetString(ReadAllBytes(path));
-}
-
-public sealed class FakeDriverMetadataProvider : IDriverMetadataProvider
-{
-    public DriverMetadata NextResult { get; set; } = new(
-        GpuName: null, GpuDriverVersion: null, GpuDriverProvider: null, AudioHdmi: []);
-
-    public DriverMetadata GetDriverMetadata() => NextResult;
 }

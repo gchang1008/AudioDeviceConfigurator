@@ -6,16 +6,11 @@ namespace AudioDeviceConfigurator.Windows;
 
 /// <summary>Enumerates active render endpoints through Core Audio.</summary>
 [SupportedOSPlatform("windows")]
-public sealed class CoreAudioEndpointProvider(IDriverMetadataProvider driverMetadata) : IAudioEndpointProvider
+public sealed class CoreAudioEndpointProvider : IAudioEndpointProvider
 {
     public IReadOnlyList<EndpointInfo> GetActiveRenderEndpoints()
     {
         var enumerator = CreateEnumerator();
-        var drivers = driverMetadata.GetDriverMetadata();
-        var audioDrivers = drivers.AudioHdmi.ToDictionary(
-            d => d.Name,
-            d => d,
-            StringComparer.OrdinalIgnoreCase);
         string? defaultId = null;
         if (enumerator.GetDefaultAudioEndpoint(CoreAudio.EDataFlowRender, CoreAudio.ERoleConsole, out var defaultDevice) == CoreAudio.SOk)
         {
@@ -40,17 +35,13 @@ public sealed class CoreAudioEndpointProvider(IDriverMetadataProvider driverMeta
                 device.GetId(out var id);
                 var name = ReadProperty(device, CoreAudio.PkeyDeviceFriendlyName) ?? id;
                 var description = ReadProperty(device, CoreAudio.PkeyDeviceDeviceDesc) ?? "";
-                var containerId = ReadProperty(device, CoreAudio.PkeyDeviceContainerId);
-
                 results.Add(new EndpointInfo(
                     EndpointId: id,
                     FriendlyName: name,
                     DeviceDescription: description,
-                    SvclCommandLineId: null,
                     DriverName: ExtractDeviceName(name, description),
-                    DriverVersion: ResolveAudioDriverVersion(name, ExtractDeviceName(name, description), audioDrivers),
-                    IsDefault: string.Equals(id, defaultId, StringComparison.OrdinalIgnoreCase),
-                    ContainerId: containerId));
+                    DriverVersion: null,
+                    IsDefault: string.Equals(id, defaultId, StringComparison.OrdinalIgnoreCase)));
             }
             finally
             {
@@ -74,10 +65,7 @@ public sealed class CoreAudioEndpointProvider(IDriverMetadataProvider driverMeta
             ?? throw new InvalidOperationException("Unable to create the Core Audio device enumerator."));
     }
 
-        /// <summary>
-    /// Reads a property, returning null when it is absent. String and GUID properties are both
-    /// needed: ContainerId arrives as VT_CLSID rather than a string.
-    /// </summary>
+    /// <summary>Reads a string property, returning null when it is absent.</summary>
     private static string? ReadProperty(CoreAudio.IMMDevice device, CoreAudio.PropertyKey key)
     {
         if (device.OpenPropertyStore(CoreAudio.StgmRead, out var store) != CoreAudio.SOk || store is null)
@@ -115,115 +103,11 @@ public sealed class CoreAudioEndpointProvider(IDriverMetadataProvider driverMeta
         return description;
     }
 
-    /// <summary>
-    /// Matches an endpoint to its HDMI audio driver. The friendly name is "Monitor (Driver)",
-    /// and the PowerShell payload lists drivers by "Driver" alone, so the parenthesised part is
-    /// the lookup key. Falls back to the full name for non-parenthesised endpoints.
-    /// </summary>
-    private static string? ResolveAudioDriverVersion(
-        string friendlyName,
-        string deviceName,
-        IReadOnlyDictionary<string, AudioHdmiDriver> audioDrivers)
-    {
-        if (audioDrivers.TryGetValue(deviceName, out var byDevice))
-        {
-            return byDevice.Version;
-        }
-
-        return audioDrivers.TryGetValue(friendlyName, out var byFriendly) ? byFriendly.Version : null;
-    }
-
     private static void Check(int hr, string message)
     {
         if (hr != CoreAudio.SOk)
         {
             throw new InvalidOperationException($"{message} (HRESULT 0x{hr:X8})");
         }
-    }
-}
-
-/// <summary>
-/// Queries WASAPI Exclusive-mode format support. Deliberately never calls Initialize, so no
-/// stream is created and no audio is played.
-/// </summary>
-[SupportedOSPlatform("windows")]
-public sealed class WasapiFormatProbe : IWasapiFormatProbe
-{
-    private static readonly Guid IidAudioClient = new("1CB9AD4C-DBFA-4c32-B178-C2F568A703B2");
-    private static readonly Guid KsDataFormatSubtypePcm = new("00000001-0000-0010-8000-00aa00389b71");
-    private const int ClsCtxAll = 23;
-
-    public FormatSupportResult IsExclusiveFormatSupported(string endpointId, Domain.WaveFormat format)
-    {
-        var enumerator = CoreAudioEndpointProvider.CreateEnumerator();
-        try
-        {
-            var hr = enumerator.GetDevice(endpointId, out var device);
-            if (hr != CoreAudio.SOk)
-            {
-                return new FormatSupportResult(hr);
-            }
-
-            try
-            {
-                var iid = IidAudioClient;
-                hr = device.Activate(ref iid, ClsCtxAll, IntPtr.Zero, out var instance);
-                if (hr != CoreAudio.SOk)
-                {
-                    return new FormatSupportResult(hr);
-                }
-
-                var client = (CoreAudio.IAudioClient)instance;
-                try
-                {
-                    var buffer = BuildFormatBuffer(format);
-                    try
-                    {
-                        return new FormatSupportResult(
-                            client.IsFormatSupported(CoreAudio.AudclntSharemodeExclusive, buffer, IntPtr.Zero));
-                    }
-                    finally
-                    {
-                        Marshal.FreeHGlobal(buffer);
-                    }
-                }
-                finally
-                {
-                    Marshal.ReleaseComObject(client);
-                }
-            }
-            finally
-            {
-                Marshal.ReleaseComObject(device);
-            }
-        }
-        finally
-        {
-            Marshal.ReleaseComObject(enumerator);
-        }
-    }
-
-    /// <summary>Builds a WAVEFORMATEX or WAVEFORMATEXTENSIBLE describing the candidate PCM format.</summary>
-    private static IntPtr BuildFormatBuffer(Domain.WaveFormat format)
-    {
-        var size = format.Extensible ? 40 : 18;
-        var bytes = new byte[size];
-        BitConverter.GetBytes((ushort)(format.Extensible ? 0xFFFE : 0x0001)).CopyTo(bytes, 0); // wFormatTag
-        BitConverter.GetBytes((ushort)format.Channels).CopyTo(bytes, 2);
-        BitConverter.GetBytes((uint)format.SampleRate).CopyTo(bytes, 4);
-        BitConverter.GetBytes((uint)format.AverageBytesPerSecond).CopyTo(bytes, 8);
-        BitConverter.GetBytes((ushort)format.BlockAlign).CopyTo(bytes, 12);
-        BitConverter.GetBytes((ushort)format.ContainerBits).CopyTo(bytes, 14);
-        if (format.Extensible)
-        {
-            BitConverter.GetBytes((ushort)22).CopyTo(bytes, 16);                        // cbSize
-            BitConverter.GetBytes((ushort)format.ValidBits).CopyTo(bytes, 18);
-            BitConverter.GetBytes(format.ChannelMask).CopyTo(bytes, 20);
-            KsDataFormatSubtypePcm.ToByteArray().CopyTo(bytes, 24);
-        }
-
-        var buffer = Marshal.AllocHGlobal(size);
-        Marshal.Copy(bytes, 0, buffer, size);
-        return buffer;
     }
 }

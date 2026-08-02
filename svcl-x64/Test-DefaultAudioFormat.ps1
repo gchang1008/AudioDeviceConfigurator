@@ -61,8 +61,24 @@ function Format-AudioFormat([object]$Format) {
     return "{0} channels, {1} bit, {2} Hz" -f $Format.Channels, $Format.BitsPerSample, $Format.SampleRate
 }
 
+$speakerConfigs = @{
+    2 = @('0x3', '0x3', '0x3')
+    4 = @('0x33', '0x33', '0x33')
+    6 = @('0x3f', '0x3f', '0x3f')
+    8 = @('0x63f', '0x63f', '0x63f')
+}
+
 try {
     $before = Get-DefaultFormat
+
+    if ($speakerConfigs.ContainsKey($Channels)) {
+        & $svclPath /SetSpeakersConfig $Device @($speakerConfigs[$Channels])
+        $configExitCode = $LASTEXITCODE
+
+        if ($configExitCode -ne 0) {
+            throw "Failed to set speakers configuration. SVCL exit code: $configExitCode"
+        }
+    }
 
     & $svclPath /SetDefaultFormat $Device $BitsPerSample $SampleRate $Channels
     $setExitCode = $LASTEXITCODE

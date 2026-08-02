@@ -4,7 +4,6 @@ public sealed record CliOptions(
     bool ShowHelp,
     bool ListDevices,
     string? DeviceId,
-    string? MonitorId,
     string? Error)
 {
     public static CliOptions Parse(string[] args)
@@ -12,7 +11,6 @@ public sealed record CliOptions(
         var showHelp = false;
         var list = false;
         string? deviceId = null;
-        string? monitorId = null;
 
         for (var i = 0; i < args.Length; i++)
         {
@@ -39,71 +37,48 @@ public sealed record CliOptions(
                     deviceId = args[++i];
                     break;
 
-                case "--monitor-id":
-                    if (i + 1 >= args.Length)
-                    {
-                        return Invalid("--monitor-id requires a value.");
-                    }
-
-                    monitorId = args[++i];
-                    break;
-
                 default:
                     return Invalid($"Unknown argument '{arg}'.");
             }
         }
 
-        return new CliOptions(showHelp, list, deviceId, monitorId, Error: null);
+        return new CliOptions(showHelp, list, deviceId, Error: null);
 
-        static CliOptions Invalid(string error) => new(false, false, null, null, error);
+        static CliOptions Invalid(string error) => new(false, false, null, error);
     }
 
     public const string HelpText = """
-        AudioDeviceConfigurator - EDID-driven audio capability validator
+        AudioDeviceConfigurator - Windows playback format configurator
 
         USAGE
           AudioDeviceConfigurator [options]
 
         OPTIONS
-          (no options)          Test the current default active render endpoint against the
-                                EDID of its paired active monitor.
-          --device-id <id>      Test a specific active render endpoint by its endpoint ID.
-          --monitor-id <id>     Use a specific active monitor by its device ID. The leading
-                                \\?\ prefix shown by --list may be omitted, since some shells
-                                mangle it.
-          --list                List active displays and active render endpoints, then exit.
+          (no options)          Read the current default render endpoint's Control Panel options,
+                                then interactively select and apply speaker channels and audio format.
+          --device-id <id>      Configure a specific active render endpoint by endpoint ID.
+          --list                List active render endpoints, then exit without changing settings.
           --help, -h            Show this help text and exit.
 
-        Supplying both --device-id and --monitor-id makes the run fully unattended.
-        When pairing is ambiguous and IDs are not supplied, an interactive prompt is shown.
+        WORKFLOW
+          1. Reads speaker-channel and Default Format options from the legacy Sound Control Panel.
+          2. Lets you select only values that Windows Control Panel exposes.
+          3. Shows a final summary; pressing Enter accepts the default Y confirmation.
+          4. Uses svcl.exe to apply both settings and reads them back for exact verification.
+          5. Keeps verified settings active; on failure, restores and verifies the original settings.
 
-        WHAT IT DOES
-          1. Reads and strictly validates the monitor's EDID (header, block lengths, checksums).
-          2. Parses CTA-861 LPCM Short Audio Descriptors into candidate formats
-             (2/6/8 channels, 16/20/24-bit, 32-192 kHz - only what EDID declares).
-          3. Queries WASAPI Exclusive IAudioClient::IsFormatSupported for every candidate.
-          4. For S_OK candidates, applies the format with svcl.exe /SetDefaultFormat, then polls
-             /SaveDeviceFormat every 200 ms for up to 3 s and requires an exact readback match.
-          5. Restores the original default format and writes JSON and CSV reports.
-
-        SIDE EFFECTS
-          - Temporarily changes the DEFAULT FORMAT of the selected render endpoint.
-          - The original format is restored on completion, on handled errors, and on Ctrl+C.
-          - Does NOT change the default playback device, speaker configuration, or any other
-            setting, does not play audio, and does not close other applications.
-          - Requires svcl.exe 1.28 or newer in the application directory.
-          - Administrator privileges are not required.
-
-        REPORTS
-          Written to the Reports directory beside this executable as
-          <PcName>_<MonitorName>_<yyyyMMdd_HHmmss>.json and .csv (local time, with a
-          sequence suffix when names collide). Reports are written for every outcome.
+        REQUIREMENTS AND SIDE EFFECTS
+          - Requires svcl.exe beside this executable and an interactive, unlocked Windows desktop.
+          - Opens the legacy Sound Control Panel briefly. Do not interact with it during enumeration.
+          - A confirmed operation permanently changes the selected endpoint's speaker configuration
+            and Default Format. It does not change the default playback endpoint or play audio.
+          - If the original speaker channel mask cannot be read, no setting is changed.
 
         EXIT CODES
-          0  PASS      Every EDID-declared format was supported, applied and read back.
-          1  FAIL      One or more formats were unsupported or could not be applied.
-          2  ERROR     EDID, pairing, SVCL, restore, reporting or other system error.
-          3  CANCELLED The user cancelled an interactive selection.
-          4  N/A       The monitor's EDID is valid but declares no LPCM audio capability.
+          0  PASS      The selected settings were applied and read back successfully.
+          1  FAIL      Apply/readback failed, but the original settings were restored and verified.
+          2  ERROR     Discovery, SVCL, or rollback failed.
+          3  CANCELLED The user cancelled before settings were changed.
+          4  N/A       No selectable Control Panel speaker channels or formats were found.
         """;
 }

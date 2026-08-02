@@ -13,50 +13,55 @@ public sealed record SvclCommandLog(
 
 public sealed class SvclException(string message) : Exception(message);
 
-/// <summary>
-/// Wraps svcl.exe. A zero process exit code proves nothing: SVCL has been observed printing
-/// "No items found" and exiting 0, so every operation is verified by reading data back.
-/// </summary>
+public interface ISvclClient
+{
+    IReadOnlyList<SvclCommandLog> CommandLog { get; }
+    string ExecutablePath { get; }
+    string? DetectedVersion { get; }
+    void VerifyInstallation();
+    SavedFormat SaveDeviceFormat(string deviceId);
+    void SetSpeakersConfig(string deviceId, int channels);
+    void SetSpeakersConfig(string deviceId, uint channelMask);
+    void SetDefaultFormat(string deviceId, int effectiveBits, int sampleRate, int channels);
+}
+
+/// <summary>Wraps SVCL commands and validates their observable results.</summary>
 public sealed class SvclClient(
     IProcessRunner processRunner,
     IFileSystem fileSystem,
-    string svclPath)
+    string svclPath) : ISvclClient
 {
     public const string MinimumVersion = "1.28";
     private const string NoItemsFound = "No items found";
-
     private static readonly TimeSpan ProcessTimeout = TimeSpan.FromSeconds(30);
-
     private readonly List<SvclCommandLog> _log = [];
 
     public IReadOnlyList<SvclCommandLog> CommandLog => _log;
-
     public string ExecutablePath => svclPath;
-
     public string? DetectedVersion { get; private set; }
 
-    /// <summary>Verifies svcl.exe exists and is at least the minimum required version.</summary>
     public void VerifyInstallation()
     {
         if (!fileSystem.FileExists(svclPath))
         {
-            throw new SvclException($"svcl.exe was not found at {svclPath}. The SVCL {MinimumVersion} or newer package must be deployed next to this application.");
+            throw new SvclException(
+                $"svcl.exe was not found at {svclPath}. SVCL {MinimumVersion} or newer is required.");
         }
 
         var version = fileSystem.GetFileVersion(svclPath);
         DetectedVersion = version;
         if (version is null)
         {
-            throw new SvclException($"Unable to read the product version of {svclPath}. SVCL {MinimumVersion} or newer is required.");
+            throw new SvclException($"Unable to read the file version of {svclPath}.");
         }
 
-        if (CompareVersions(version, MinimumVersion) < 0)
+        if (CompareVersions(NormalizeNirsoftVersion(version), MinimumVersion) < 0)
         {
-            throw new SvclException($"svcl.exe version {version} is older than the required {MinimumVersion}.");
+            throw new SvclException(
+                $"svcl.exe version {version} is older than the required {MinimumVersion}.");
         }
     }
 
-    /// <summary>Reads the current default format of the endpoint via /SaveDeviceFormat.</summary>
     public SavedFormat SaveDeviceFormat(string deviceId)
     {
         var tempPath = fileSystem.GetTempFilePath(".dat");
@@ -65,7 +70,6 @@ public sealed class SvclClient(
             fileSystem.DeleteFile(tempPath);
             var args = new[] { "/SaveDeviceFormat", deviceId, tempPath };
             var result = processRunner.Run(svclPath, args, ProcessTimeout);
-
             var failure = DetectFailure(result);
             if (failure is null && !fileSystem.FileExists(tempPath))
             {
@@ -83,7 +87,6 @@ public sealed class SvclClient(
             }
 
             Log("/SaveDeviceFormat", args, result, failure);
-
             if (failure is not null)
             {
                 throw new SvclException($"/SaveDeviceFormat failed for '{deviceId}': {failure}");
@@ -97,7 +100,21 @@ public sealed class SvclClient(
         }
     }
 
-    /// <summary>Applies a default format via /SetDefaultFormat. Readback is the caller's responsibility.</summary>
+    public void SetSpeakersConfig(string deviceId, int channels) =>
+        SetSpeakersConfig(deviceId, GetSpeakerMask(channels));
+
+    public void SetSpeakersConfig(string deviceId, uint channelMask)
+    {
+        if (channelMask == 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(channelMask));
+        }
+
+        var mask = $"0x{channelMask:x}";
+        var args = new[] { "/SetSpeakersConfig", deviceId, mask, mask, mask };
+        ExecuteSet("/SetSpeakersConfig", deviceId, args);
+    }
+
     public void SetDefaultFormat(string deviceId, int effectiveBits, int sampleRate, int channels)
     {
         var args = new[]
@@ -108,18 +125,19 @@ public sealed class SvclClient(
             sampleRate.ToString(),
             channels.ToString(),
         };
-
-        var result = processRunner.Run(svclPath, args, ProcessTimeout);
-        var failure = DetectFailure(result);
-        Log("/SetDefaultFormat", args, result, failure);
-
-        if (failure is not null)
-        {
-            throw new SvclException($"/SetDefaultFormat failed for '{deviceId}': {failure}");
-        }
+        ExecuteSet("/SetDefaultFormat", deviceId, args);
     }
 
-    /// <summary>Parses a WAVEFORMATEX / WAVEFORMATEXTENSIBLE structure as written by SVCL.</summary>
+    public static uint GetSpeakerMask(int channels) => channels switch
+    {
+        2 => 0x3,
+        4 => 0x33,
+        6 => 0x3f,
+        8 => 0x63f,
+        _ => throw new ArgumentOutOfRangeException(
+            nameof(channels), channels, "Only 2, 4, 6, and 8 channels are supported."),
+    };
+
     public static SavedFormat ParseSavedFormat(byte[] data)
     {
         if (data.Length < 16)
@@ -131,7 +149,7 @@ public sealed class SvclClient(
         var channels = BitConverter.ToUInt16(data, 2);
         var sampleRate = BitConverter.ToUInt32(data, 4);
         var containerBits = BitConverter.ToUInt16(data, 14);
-        int validBits = containerBits;
+        var validBits = (int)containerBits;
         uint channelMask = 0;
 
         if (formatTag == SavedFormat.WaveFormatExtensible)
@@ -153,16 +171,23 @@ public sealed class SvclClient(
         }
 
         return new SavedFormat(
-            FormatTag: formatTag,
-            Channels: channels,
-            SampleRate: (int)sampleRate,
-            ContainerBits: containerBits,
-            ValidBits: validBits,
-            ChannelMask: channelMask,
-            RawBytes: data);
+            formatTag, channels, (int)sampleRate, containerBits, validBits, channelMask, data);
     }
 
-    /// <summary>Compares dotted numeric versions; missing components count as zero.</summary>
+    public static string NormalizeNirsoftVersion(string fileVersion)
+    {
+        var parts = fileVersion.Split('.');
+        if (parts.Length < 3
+            || !int.TryParse(parts[0], out var major)
+            || !int.TryParse(parts[1], out var minor)
+            || !int.TryParse(parts[2], out var build))
+        {
+            return fileVersion;
+        }
+
+        return minor >= 10 ? $"{major}.{minor}" : $"{major}.{minor}{build}";
+    }
+
     public static int CompareVersions(string left, string right)
     {
         var a = ParseParts(left);
@@ -181,7 +206,18 @@ public sealed class SvclClient(
         return 0;
 
         static int[] ParseParts(string value) =>
-            value.Split('.').Select(p => int.TryParse(p, out var n) ? n : 0).ToArray();
+            value.Split('.').Select(part => int.TryParse(part, out var n) ? n : 0).ToArray();
+    }
+
+    private void ExecuteSet(string command, string deviceId, IReadOnlyList<string> args)
+    {
+        var result = processRunner.Run(svclPath, args, ProcessTimeout);
+        var failure = DetectFailure(result);
+        Log(command, args, result, failure);
+        if (failure is not null)
+        {
+            throw new SvclException($"{command} failed for '{deviceId}': {failure}");
+        }
     }
 
     private static string? DetectFailure(ProcessResult result)
@@ -191,21 +227,17 @@ public sealed class SvclClient(
             return $"SVCL exited with code {result.ExitCode}.";
         }
 
-        var combined = result.StandardOutput + result.StandardError;
-        if (combined.Contains(NoItemsFound, StringComparison.OrdinalIgnoreCase))
-        {
-            return $"SVCL reported '{NoItemsFound}'.";
-        }
-
-        return null;
+        return (result.StandardOutput + result.StandardError)
+            .Contains(NoItemsFound, StringComparison.OrdinalIgnoreCase)
+            ? $"SVCL reported '{NoItemsFound}'."
+            : null;
     }
 
-    private void Log(string command, IReadOnlyList<string> args, ProcessResult result, string? failure) =>
+    private void Log(
+        string command,
+        IReadOnlyList<string> args,
+        ProcessResult result,
+        string? failure) =>
         _log.Add(new SvclCommandLog(
-            command,
-            args,
-            result.ExitCode,
-            result.StandardOutput,
-            result.StandardError,
-            failure));
+            command, args, result.ExitCode, result.StandardOutput, result.StandardError, failure));
 }

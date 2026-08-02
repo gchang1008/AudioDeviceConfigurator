@@ -1,53 +1,30 @@
 using AudioDeviceConfigurator.Abstractions;
-using AudioDeviceConfigurator.Candidates;
 using AudioDeviceConfigurator.Cli;
 using AudioDeviceConfigurator.Domain;
-using AudioDeviceConfigurator.Edid;
-using AudioDeviceConfigurator.Pairing;
-using AudioDeviceConfigurator.Reporting;
 using AudioDeviceConfigurator.Svcl;
 
 namespace AudioDeviceConfigurator.Application;
 
 /// <summary>Everything the application needs from the outside world.</summary>
 public sealed record AppEnvironment(
-    IDisplayProvider Displays,
     IAudioEndpointProvider Endpoints,
-    IWasapiFormatProbe Wasapi,
-    IProcessRunner ProcessRunner,
     IFileSystem FileSystem,
     IClock Clock,
     IConsole Console,
-    ISystemInfoProvider SystemInfo,
-    IDriverMetadataProvider DriverMetadata,
-    string ApplicationDirectory);
+    IControlPanelFormatProvider ControlPanelFormats,
+    ISvclClient Svcl);
 
-/// <summary>
-/// Runs the whole validation workflow. This is the seam the tests drive: everything below it is
-/// deterministic, and every Windows boundary is injected.
-/// </summary>
+/// <summary>Configures a selected endpoint from its Control Panel options.</summary>
 public sealed class ValidationRunner(AppEnvironment env, CancellationToken cancellationToken = default)
 {
-    public static readonly TimeSpan ReadbackPollInterval = TimeSpan.FromMilliseconds(200);
-    public static readonly TimeSpan ReadbackTimeout = TimeSpan.FromSeconds(3);
-
-    private readonly List<string> _errors = [];
-    private readonly List<CandidateReport> _candidateReports = [];
-
-    private SavedFormat? _originalFormat;
-    private bool _formatModified;
-    private bool _restoreFailed;
-    private RestoreReport _restore = new(Attempted: false, Succeeded: false, Trigger: null, VerifiedFormat: null, FailureDetail: null);
-    private SvclClient? _svcl;
-    private EndpointReport? _endpointReport;
-    private MonitorReport? _monitorReport;
-    private string _monitorNameForFile = "UnknownMonitor";
+    private ControlPanelFormatResult? _controlPanelFormats;
+    private int? _selectedChannels;
+    private ControlPanelFormatItem? _selectedFormat;
+    private SavedFormat? _before;
+    private string? _deviceToken;
 
     public ExitCode Run(CliOptions options)
     {
-        var startedAt = env.Clock.LocalNow;
-        var system = env.SystemInfo.GetSystemInfo();
-
         if (options.Error is not null)
         {
             env.Console.WriteError(options.Error);
@@ -72,46 +49,27 @@ public sealed class ValidationRunner(AppEnvironment env, CancellationToken cance
         {
             status = Execute(options);
         }
-        catch (SelectionCancelledException ex)
-        {
-            _errors.Add(ex.Message);
-            env.Console.WriteLine();
-            env.Console.WriteLine("Cancelled by user.");
-            status = ExitCode.Cancelled;
-        }
         catch (OperationCanceledException)
         {
-            _errors.Add("The run was cancelled (Ctrl+C).");
             env.Console.WriteLine();
             env.Console.WriteLine("Cancelled by user (Ctrl+C).");
             status = ExitCode.Cancelled;
         }
         catch (Exception ex)
         {
-            _errors.Add(ex.Message);
             env.Console.WriteError($"ERROR: {ex.Message}");
             status = ExitCode.SystemError;
         }
 
-        // Restoration is attempted for every path that reached a modification, including errors.
-        // A restore that has already failed is never retried: the first failure is the reportable
-        // outcome, and continuing to touch a system we cannot restore is what story 46 forbids.
-        if (_formatModified && !_restoreFailed && !_restore.Succeeded)
+        if (_controlPanelFormats is not null)
         {
-            var trigger = status switch
-            {
-                ExitCode.Cancelled => "cancellation",
-                ExitCode.SystemError => "error",
-                _ => "completion",
-            };
-
-            if (!TryRestore(trigger))
-            {
-                status = ExitCodePrecedence.Max(status, ExitCode.SystemError);
-            }
+            PrintControlPanelOptions(_controlPanelFormats);
         }
 
-        return Finish(status, startedAt, system);
+        env.Console.WriteLine();
+        env.Console.WriteLine($"Overall status: {DescribeStatus(status)}");
+        env.Console.WriteLine($"Exit code {(int)status}: {DescribeExitCode(status)}");
+        return status;
     }
 
     private ExitCode RunList()
@@ -125,417 +83,228 @@ public sealed class ValidationRunner(AppEnvironment env, CancellationToken cance
                 env.Console.WriteLine($"  {endpoint.FriendlyName}{marker}");
                 env.Console.WriteLine($"    Endpoint ID : {endpoint.EndpointId}");
                 env.Console.WriteLine($"    Description : {endpoint.DeviceDescription}");
-                env.Console.WriteLine($"    Container   : {endpoint.ContainerId ?? "Unknown"}");
-            }
-
-            env.Console.WriteLine();
-            env.Console.WriteLine("Active displays:");
-            foreach (var display in env.Displays.GetActiveDisplays())
-            {
-                env.Console.WriteLine($"  {display.FriendlyName}");
-                env.Console.WriteLine($"    Monitor ID  : {display.MonitorId}");
-                env.Console.WriteLine($"    Adapter     : {display.AdapterName ?? "Unknown"}");
-                env.Console.WriteLine($"    Container   : {display.ContainerId ?? "Unknown"}");
             }
 
             return ExitCode.Pass;
         }
         catch (Exception ex)
         {
-            env.Console.WriteError($"ERROR: {ex}");
+            env.Console.WriteError($"ERROR: {ex.Message}");
             return ExitCode.SystemError;
         }
     }
 
     private ExitCode Execute(CliOptions options)
     {
-        _svcl = new SvclClient(
-            env.ProcessRunner,
-            env.FileSystem,
-            Path.Combine(env.ApplicationDirectory, "svcl.exe"));
-        _svcl.VerifyInstallation();
+        cancellationToken.ThrowIfCancellationRequested();
+        var endpoint = ResolveEndpoint(env.Endpoints.GetActiveRenderEndpoints(), options.DeviceId);
 
-        var target = new TargetSelector(env.Console).Select(
-            env.Endpoints.GetActiveRenderEndpoints(),
-            env.Displays.GetActiveDisplays(),
-            options.DeviceId,
-            options.MonitorId);
-
-        _endpointReport = ToReport(target.Endpoint);
-
-        var parsed = EdidParser.Parse(target.Display.RawEdid);
-        _monitorNameForFile = parsed.MonitorName ?? target.Display.FriendlyName;
-
-        var candidates = CandidateGenerator.Generate(parsed);
-        _monitorReport = ToReport(target.Display, parsed, candidates, target.PairingMethod);
-
-        env.Console.WriteLine($"Endpoint : {target.Endpoint.FriendlyName}");
-        env.Console.WriteLine($"           {target.Endpoint.EndpointId}");
-        env.Console.WriteLine($"Monitor  : {target.Display.FriendlyName}");
-        env.Console.WriteLine($"           {target.Display.MonitorId}");
+        env.Console.WriteLine($"Endpoint : {endpoint.FriendlyName}");
+        env.Console.WriteLine($"           {endpoint.EndpointId}");
         env.Console.WriteLine();
 
-        if (candidates.Count == 0)
+        var result = env.ControlPanelFormats.ReadDefaultFormats(endpoint, TimeSpan.FromSeconds(30));
+        _controlPanelFormats = result;
+        env.Console.WriteLine($"Control Panel formats: {result.Items.Count}");
+
+        var channels = result.SpeakerConfigurations
+            .Select(item => item.Channels)
+            .Where(value => value is 2 or 4 or 6 or 8)
+            .Distinct()
+            .ToArray();
+        var formats = result.Items
+            .Where(item => item.ParseStatus == ControlPanelParseStatus.Parsed
+                           && item.EffectiveBits.HasValue
+                           && item.SampleRate.HasValue)
+            .ToArray();
+        if (channels.Length == 0 || formats.Length == 0)
         {
-            env.Console.WriteLine("The monitor's EDID is valid but declares no LPCM audio capability.");
             return ExitCode.NotApplicable;
         }
 
-        var deviceSelector = target.Endpoint.SvclCommandLineId ?? target.Endpoint.EndpointId;
-        _originalFormat = _svcl.SaveDeviceFormat(deviceSelector);
-        env.Console.WriteLine($"Original default format: {_originalFormat}");
-        env.Console.WriteLine($"Testing {candidates.Count} EDID-derived format(s).");
+        _selectedChannels = Select("speaker channel count", channels, value => $"{value} channels");
+        _selectedFormat = Select("audio format", formats, item => item.DisplayText);
+
         env.Console.WriteLine();
+        env.Console.WriteLine("Selected settings:");
+        env.Console.WriteLine($"  Speaker channels : {_selectedChannels}");
+        env.Console.WriteLine($"  Audio format     : {_selectedFormat.DisplayText}");
+        env.Console.WriteLine("Apply these settings? [Y/n]");
+        var confirmation = env.Console.ReadLine()?.Trim();
+        if (confirmation is null
+            || (confirmation.Length > 0
+                && !string.Equals(confirmation, "Y", StringComparison.OrdinalIgnoreCase)))
+        {
+            throw new OperationCanceledException();
+        }
 
-        return TestCandidates(candidates, deviceSelector);
+        return ApplyAndVerify(endpoint);
     }
 
-    private ExitCode TestCandidates(IReadOnlyList<CandidateFormat> candidates, string deviceSelector)
+    private ExitCode ApplyAndVerify(EndpointInfo endpoint)
     {
-        var status = ExitCode.Pass;
-
-        for (var i = 0; i < candidates.Count; i++)
+        cancellationToken.ThrowIfCancellationRequested();
+        _deviceToken = endpoint.EndpointId;
+        env.Svcl.VerifyInstallation();
+        _before = env.Svcl.SaveDeviceFormat(_deviceToken);
+        if (_before.ChannelMask == 0)
         {
+            throw new InvalidOperationException(
+                "The original speaker channel mask is unavailable; no settings were changed.");
+        }
+
+        var settersStarted = false;
+        try
+        {
+            settersStarted = true;
+            env.Svcl.SetSpeakersConfig(_deviceToken, _selectedChannels!.Value);
             cancellationToken.ThrowIfCancellationRequested();
-            var candidate = candidates[i];
-            var report = TestCandidate(i + 1, candidate, deviceSelector, out var needsRestore);
-            _candidateReports.Add(report);
+            env.Svcl.SetDefaultFormat(
+                _deviceToken,
+                _selectedFormat!.EffectiveBits!.Value,
+                _selectedFormat.SampleRate!.Value,
+                _selectedChannels.Value);
+            cancellationToken.ThrowIfCancellationRequested();
+            env.Clock.Sleep(TimeSpan.FromMilliseconds(500));
+            cancellationToken.ThrowIfCancellationRequested();
+            var after = env.Svcl.SaveDeviceFormat(_deviceToken);
+            cancellationToken.ThrowIfCancellationRequested();
 
-            if (report.Status != CandidateStatus.Pass)
+            if (!Matches(after, _selectedChannels.Value,
+                    _selectedFormat.EffectiveBits.Value,
+                    _selectedFormat.SampleRate.Value,
+                    SvclClient.GetSpeakerMask(_selectedChannels.Value)))
             {
-                status = ExitCodePrecedence.Max(status, ExitCode.FormatMismatch);
+                throw new SwitchMismatchException("The SVCL readback does not match the selected settings.");
             }
 
-            // A failed apply must be undone before the next candidate so failures cannot contaminate results.
-            if (needsRestore && !TryRestore("candidate failure"))
-            {
-                MarkRemainingNotTested(candidates, i + 1);
-                return ExitCode.SystemError;
-            }
+            env.Console.WriteLine();
+            env.Console.WriteLine("Switch completed and verified. The selected settings remain active.");
+            return ExitCode.Pass;
         }
-
-        return status;
-    }
-
-    private CandidateReport TestCandidate(
-        int index,
-        CandidateFormat candidate,
-        string deviceSelector,
-        out bool needsRestore)
-    {
-        needsRestore = false;
-
-        var extensibleSupport = env.Wasapi.IsExclusiveFormatSupported(_endpointReport!.EndpointId, candidate.Format);
-        var extensibleResult = ToWasapiStageResult(extensibleSupport);
-        var plainSupport = candidate.Format.CanRepresentAsWaveFormatEx
-            ? env.Wasapi.IsExclusiveFormatSupported(
-                _endpointReport.EndpointId,
-                candidate.Format with { Extensible = false })
-            : null;
-        var plainResult = plainSupport is null ? WasapiStageResult.NotRun : ToWasapiStageResult(plainSupport);
-
-        // WASAPI is diagnostic only. EDID and SVCL apply/readback determine the final verdict.
-        needsRestore = true;
-        _formatModified = true;
-        string? failure = null;
-        SavedFormat? readback = null;
-        var applyResult = ApplyStageResult.Failed;
-        double elapsed = 0;
-
-        try
-        {
-            _svcl!.SetDefaultFormat(deviceSelector, candidate.EffectiveBits, candidate.SampleRate, candidate.Channels);
-            (readback, elapsed) = PollForReadback(deviceSelector, candidate);
-
-            if (Matches(readback, candidate))
-            {
-                applyResult = ApplyStageResult.Matched;
-                needsRestore = false;
-            }
-            else
-            {
-                applyResult = ApplyStageResult.Mismatched;
-                failure = $"Readback did not match: expected {candidate}, got {readback}.";
-            }
-        }
-        catch (SvclException ex)
-        {
-            failure = ex.Message;
-        }
-
-        return BuildReport(
-            index,
-            candidate,
-            extensibleResult,
-            extensibleSupport.HResultText,
-            plainResult,
-            plainSupport?.HResultText ?? "",
-            applyResult,
-            readback,
-            elapsed,
-            failure,
-            applyResult == ApplyStageResult.Matched ? CandidateStatus.Pass : CandidateStatus.ApplyFailed);
-    }
-
-    /// <summary>Polls the saved format every 200 ms for up to 3 s so slower drivers are not falsely failed.</summary>
-    private (SavedFormat Format, double ElapsedMs) PollForReadback(string deviceSelector, CandidateFormat candidate)
-    {
-        var startedAt = env.Clock.Elapsed;
-        var deadline = startedAt + ReadbackTimeout;
-        SavedFormat? last = null;
-        Exception? lastError = null;
-
-        while (true)
-        {
-            try
-            {
-                last = _svcl!.SaveDeviceFormat(deviceSelector);
-                lastError = null;
-                if (Matches(last, candidate))
-                {
-                    return (last, (env.Clock.Elapsed - startedAt).TotalMilliseconds);
-                }
-            }
-            catch (SvclException ex)
-            {
-                lastError = ex;
-            }
-
-            if (env.Clock.Elapsed >= deadline)
-            {
-                break;
-            }
-
-            env.Clock.Sleep(ReadbackPollInterval);
-        }
-
-        if (last is null)
-        {
-            throw lastError ?? new SvclException("The format could not be read back within the timeout.");
-        }
-
-        return (last, (env.Clock.Elapsed - startedAt).TotalMilliseconds);
-    }
-
-    private static bool Matches(SavedFormat saved, CandidateFormat candidate) =>
-        saved.Channels == candidate.Channels
-        && saved.SampleRate == candidate.SampleRate
-        && saved.EffectiveBits == candidate.EffectiveBits;
-
-    private bool TryRestore(string trigger)
-    {
-        if (_originalFormat is null || _svcl is null || _endpointReport is null)
-        {
-            return true;
-        }
-
-        var deviceSelector = _endpointReport.SvclCommandLineId ?? _endpointReport.EndpointId;
-        try
-        {
-            _svcl.SetDefaultFormat(
-                deviceSelector,
-                _originalFormat.EffectiveBits,
-                _originalFormat.SampleRate,
-                _originalFormat.Channels);
-
-            var verified = PollForRestoreVerification(deviceSelector);
-            if (verified is null)
-            {
-                throw new SvclException(
-                    $"The original format could not be verified after restoration (expected {_originalFormat}).");
-            }
-
-            _restore = new RestoreReport(
-                Attempted: true,
-                Succeeded: true,
-                Trigger: trigger,
-                VerifiedFormat: FormatSnapshot.From(verified),
-                FailureDetail: null);
-            return true;
-        }
-        catch (Exception ex)
-        {
-            var detail = $"Restoration failed ({trigger}): {ex.Message}";
-            _errors.Add(detail);
-            _restoreFailed = true;
-            _restore = new RestoreReport(
-                Attempted: true,
-                Succeeded: false,
-                Trigger: trigger,
-                VerifiedFormat: null,
-                FailureDetail: detail);
-            env.Console.WriteError(detail);
-            return false;
-        }
-    }
-
-    private SavedFormat? PollForRestoreVerification(string deviceSelector)
-    {
-        var deadline = env.Clock.Elapsed + ReadbackTimeout;
-        while (true)
-        {
-            var current = _svcl!.SaveDeviceFormat(deviceSelector);
-            if (current.Channels == _originalFormat!.Channels
-                && current.SampleRate == _originalFormat.SampleRate
-                && current.EffectiveBits == _originalFormat.EffectiveBits)
-            {
-                return current;
-            }
-
-            if (env.Clock.Elapsed >= deadline)
-            {
-                return null;
-            }
-
-            env.Clock.Sleep(ReadbackPollInterval);
-        }
-    }
-
-    private void MarkRemainingNotTested(IReadOnlyList<CandidateFormat> candidates, int startIndex)
-    {
-        for (var i = startIndex; i < candidates.Count; i++)
-        {
-            _candidateReports.Add(BuildReport(
-                i + 1,
-                candidates[i],
-                WasapiStageResult.NotRun,
-                "",
-                WasapiStageResult.NotRun,
-                "",
-                ApplyStageResult.NotRun,
-                readback: null,
-                elapsed: null,
-                failure: "Testing stopped because the original format could not be restored.",
-                status: CandidateStatus.NotTested));
-        }
-    }
-
-    private static WasapiStageResult ToWasapiStageResult(FormatSupportResult support) =>
-        support.IsSupported
-            ? WasapiStageResult.Supported
-            : support.HResult == FormatSupportResult.AudclntUnsupportedFormat
-                ? WasapiStageResult.Unsupported
-                : WasapiStageResult.Error;
-
-    private static CandidateReport BuildReport(
-        int index,
-        CandidateFormat candidate,
-        WasapiStageResult wasapi,
-        string hresult,
-        WasapiStageResult plainWasapi,
-        string plainHresult,
-        ApplyStageResult apply,
-        SavedFormat? readback,
-        double? elapsed,
-        string? failure,
-        CandidateStatus status) =>
-        new(
-            Index: index,
-            Channels: candidate.Channels,
-            SampleRate: candidate.SampleRate,
-            EffectiveBits: candidate.EffectiveBits,
-            ContainerBits: candidate.ContainerBits,
-            ChannelMask: candidate.Format.ChannelMask,
-            SourceSadReferences: candidate.SourceSadReferences,
-            WasapiResult: wasapi,
-            WasapiHResult: hresult,
-            PlainWasapiResult: plainWasapi,
-            PlainWasapiHResult: plainHresult,
-            ExtensibleWasapiResult: wasapi,
-            ExtensibleWasapiHResult: hresult,
-            ApplyResult: apply,
-            ReadbackSummary: readback?.ToString(),
-            ReadbackChannels: readback?.Channels,
-            ReadbackSampleRate: readback?.SampleRate,
-            ReadbackEffectiveBits: readback?.EffectiveBits,
-            ReadbackContainerBits: readback?.ContainerBits,
-            ApplyElapsedMilliseconds: elapsed,
-            FailureDetail: failure,
-            Status: status);
-
-    private ExitCode Finish(ExitCode status, DateTimeOffset startedAt, SystemInfo system)
-    {
-        var completedAt = env.Clock.LocalNow;
-        var report = new RunReport(
-            SchemaVersion: RunReport.CurrentSchemaVersion,
-            RunId: $"{startedAt:yyyyMMdd_HHmmss}_{system.MachineName}",
-            StartedAtLocal: startedAt.ToString("yyyy-MM-dd HH:mm:ss zzz"),
-            CompletedAtLocal: completedAt.ToString("yyyy-MM-dd HH:mm:ss zzz"),
-            OverallStatus: DescribeStatus(status),
-            ExitCode: (int)status,
-            ExitCodeMeaning: DescribeExitCode(status),
-            System: system,
-            Endpoint: _endpointReport,
-            Monitor: _monitorReport,
-            OriginalFormat: _originalFormat is null ? null : FormatSnapshot.From(_originalFormat),
-            SvclPath: _svcl?.ExecutablePath,
-            SvclVersion: _svcl?.DetectedVersion,
-            Candidates: _candidateReports,
-            SvclCommands: _svcl?.CommandLog ?? [],
-            Restore: _restore,
-            Errors: _errors);
-
-        PrintSummary(report);
-
-        try
-        {
-            var writer = new ReportWriter(env.FileSystem, Path.Combine(env.ApplicationDirectory, "Reports"));
-            var paths = writer.Write(report, system.MachineName, _monitorNameForFile, completedAt);
-            env.Console.WriteLine($"JSON report : {paths.JsonPath}");
-            env.Console.WriteLine($"CSV report  : {paths.CsvPath}");
-        }
-        catch (Exception ex)
+        catch (Exception ex) when (settersStarted)
         {
             env.Console.WriteError($"ERROR: {ex.Message}");
-            status = ExitCodePrecedence.Max(status, ExitCode.SystemError);
+            return RollBack(ex switch
+            {
+                OperationCanceledException => ExitCode.Cancelled,
+                SwitchMismatchException => ExitCode.FormatMismatch,
+                _ => ExitCode.SystemError,
+            });
         }
-
-        env.Console.WriteLine();
-        env.Console.WriteLine($"Overall status: {DescribeStatus(status)}");
-        env.Console.WriteLine($"Exit code {(int)status}: {DescribeExitCode(status)}");
-        return status;
     }
 
-    private void PrintSummary(RunReport report)
+    private ExitCode RollBack(ExitCode failureStatus)
     {
-        var passing = report.Candidates.Where(c => c.Status == CandidateStatus.Pass).ToList();
+        try
+        {
+            env.Svcl.SetSpeakersConfig(_deviceToken!, _before!.ChannelMask);
+            env.Svcl.SetDefaultFormat(
+                _deviceToken!, _before.EffectiveBits, _before.SampleRate, _before.Channels);
+            env.Clock.Sleep(TimeSpan.FromMilliseconds(500));
+            var restored = env.Svcl.SaveDeviceFormat(_deviceToken!);
+            if (!Matches(restored, _before.Channels, _before.EffectiveBits,
+                    _before.SampleRate, _before.ChannelMask))
+            {
+                throw new InvalidOperationException("The original settings did not match after rollback.");
+            }
 
+            env.Console.WriteLine("Original settings were restored and verified.");
+            return failureStatus;
+        }
+        catch (Exception rollbackFailure)
+        {
+            env.Console.WriteError(
+                $"ERROR: Rollback failed; the original settings may not have been completely restored: {rollbackFailure.Message}");
+            return ExitCode.SystemError;
+        }
+    }
+
+    private T Select<T>(string label, IReadOnlyList<T> options, Func<T, string> display)
+    {
         env.Console.WriteLine();
-        if (passing.Count > 0)
+        env.Console.WriteLine($"Available {label} options:");
+        for (var i = 0; i < options.Count; i++)
         {
-            env.Console.WriteLine("Supported formats:");
-            env.Console.WriteLine("  Channels  Sample rate  Bit depth  Container");
-            foreach (var c in passing)
+            env.Console.WriteLine($"  [{i + 1}] {display(options[i])}");
+        }
+
+        while (true)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            env.Console.WriteLine($"Select 1-{options.Count}, or C to cancel:");
+            var input = env.Console.ReadLine()?.Trim();
+            if (input is null || string.Equals(input, "C", StringComparison.OrdinalIgnoreCase))
             {
-                env.Console.WriteLine(
-                    $"  {c.Channels,8}  {c.SampleRate,11}  {c.EffectiveBits,9}  {c.ContainerBits,9}");
+                throw new OperationCanceledException();
             }
-        }
-        else if (report.Candidates.Count > 0)
-        {
-            env.Console.WriteLine("Supported formats: none");
-        }
 
-        if (report.Candidates.Count > 0)
-        {
-            env.Console.WriteLine();
-            env.Console.WriteLine($"Passed                       : {report.PassCount}");
-            env.Console.WriteLine($"Unsupported by WASAPI        : {report.UnsupportedCount}");
-            env.Console.WriteLine($"Apply/readback failed        : {report.FailedCount}");
-            if (report.NotTestedCount > 0)
+            if (int.TryParse(input, out var index) && index >= 1 && index <= options.Count)
             {
-                env.Console.WriteLine($"Not tested                   : {report.NotTestedCount}");
+                return options[index - 1];
             }
-        }
 
-        if (_formatModified)
+            env.Console.WriteLine("Invalid selection.");
+        }
+    }
+
+    private static bool Matches(
+        SavedFormat format,
+        int channels,
+        int effectiveBits,
+        int sampleRate,
+        uint channelMask) =>
+        format.Channels == channels
+        && format.EffectiveBits == effectiveBits
+        && format.SampleRate == sampleRate
+        && format.ChannelMask == channelMask;
+
+    private sealed class SwitchMismatchException(string message) : Exception(message);
+
+    internal static EndpointInfo ResolveEndpoint(IReadOnlyList<EndpointInfo> endpoints, string? requestedId)
+    {
+        if (endpoints.Count == 0)
         {
-            env.Console.WriteLine();
-            env.Console.WriteLine(_restore.Succeeded
-                ? $"Original format restored: {_originalFormat}"
-                : "WARNING: the original default format was NOT restored.");
+            throw new InvalidOperationException("No active render endpoints were found.");
         }
 
+        if (requestedId is not null)
+        {
+            return endpoints.FirstOrDefault(endpoint => string.Equals(
+                       endpoint.EndpointId, requestedId, StringComparison.OrdinalIgnoreCase))
+                   ?? throw new InvalidOperationException(
+                       $"No active render endpoint matches the ID '{requestedId}'.");
+        }
+
+        return endpoints.FirstOrDefault(endpoint => endpoint.IsDefault)
+               ?? throw new InvalidOperationException(
+                   "No default active render endpoint was found. Specify one with --device-id.");
+    }
+
+    private void PrintControlPanelOptions(ControlPanelFormatResult controlPanel)
+    {
+        env.Console.WriteLine();
+        env.Console.WriteLine("Control Panel options:");
+        env.Console.WriteLine("  Source=mmsys.cpl");
+        if (controlPanel.SpeakerConfigurations.Count > 0)
+        {
+            var channels = string.Join(", ", controlPanel.SpeakerConfigurations
+                .Select(item => item.Channels)
+                .Distinct()
+                .OrderBy(value => value));
+            var configurations = string.Join(", ", controlPanel.SpeakerConfigurations
+                .Select(item => $"{item.DisplayText} ({item.Channels})"));
+            env.Console.WriteLine($"  Supported speaker channels={channels}");
+            env.Console.WriteLine($"  Speaker configurations={configurations}");
+            env.Console.WriteLine($"  Max supported channels={controlPanel.MaxSupportedChannels}");
+        }
+
+        foreach (var item in controlPanel.Items)
+        {
+            env.Console.WriteLine($"  {item.DisplayText}");
+        }
+
+        env.Console.WriteLine($"  Cleanup={(controlPanel.Snapshot.CleanupSucceeded ? "Succeeded" : "Failed")}");
         env.Console.WriteLine();
     }
 
@@ -551,52 +320,11 @@ public sealed class ValidationRunner(AppEnvironment env, CancellationToken cance
 
     private static string DescribeExitCode(ExitCode status) => status switch
     {
-        ExitCode.Pass => "every EDID-declared format was supported, applied and read back",
-        ExitCode.FormatMismatch => "one or more formats were unsupported or could not be applied",
-        ExitCode.SystemError => "EDID, pairing, SVCL, restore, reporting or other system error",
-        ExitCode.Cancelled => "cancelled by the user",
-        ExitCode.NotApplicable => "the monitor declares no LPCM audio capability",
+        ExitCode.Pass => "the selected settings were applied and read back successfully",
+        ExitCode.FormatMismatch => "apply or readback failed, but the original settings were restored and verified",
+        ExitCode.SystemError => "discovery, SVCL, or rollback failed",
+        ExitCode.Cancelled => "cancelled before settings were changed",
+        ExitCode.NotApplicable => "no selectable Control Panel speaker channels or formats were found",
         _ => "unknown",
     };
-
-    private static EndpointReport ToReport(EndpointInfo e) => new(
-        e.EndpointId, e.FriendlyName, e.DeviceDescription, e.SvclCommandLineId,
-        e.DriverName, e.DriverVersion, e.IsDefault, e.ContainerId);
-
-    private static MonitorReport ToReport(
-        DisplayInfo display,
-        ParsedEdid parsed,
-        IReadOnlyList<CandidateFormat> candidates,
-        PairingMethod pairingMethod)
-    {
-        var testedSources = candidates.SelectMany(c => c.SourceSadReferences).ToHashSet();
-
-        return new MonitorReport(
-            MonitorId: display.MonitorId,
-            FriendlyName: display.FriendlyName,
-            ManufacturerId: parsed.ManufacturerId,
-            ProductCode: parsed.ProductCode,
-            SerialNumber: parsed.SerialNumber,
-            MonitorName: parsed.MonitorName,
-            EdidVersion: parsed.EdidVersion,
-            EdidRevision: parsed.EdidRevision,
-            ExtensionCount: parsed.ExtensionCount,
-            AdapterName: display.AdapterName,
-            GpuDriverName: display.GpuDriverName,
-            GpuDriverProvider: display.GpuDriverProvider,
-            GpuDriverVersion: display.GpuDriverVersion,
-            ContainerId: display.ContainerId,
-            PairingMethod: pairingMethod.ToString(),
-            RawEdidHex: Convert.ToHexString(parsed.RawBytes),
-            AudioDescriptors: parsed.AudioDescriptors.Select(d => new SadReport(
-                d.SourceReference,
-                d.FormatCode.ToString(),
-                d.IsLpcm,
-                d.MaxChannels,
-                d.SampleRates,
-                d.BitDepths,
-                d.MaxBitRateKbps,
-                Convert.ToHexString(d.RawBytes),
-                testedSources.Contains(d.SourceReference))).ToList());
-    }
 }

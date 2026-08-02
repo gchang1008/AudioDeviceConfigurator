@@ -2,32 +2,90 @@ using AudioDeviceConfigurator.Domain;
 
 namespace AudioDeviceConfigurator.Abstractions;
 
-/// <summary>An active display path Windows currently recognizes, with its raw EDID.</summary>
-public sealed record DisplayInfo(
-    string MonitorId,
-    string FriendlyName,
-    string? AdapterName,
-    string? GpuDriverName,
-    string? GpuDriverProvider,
-    string? GpuDriverVersion,
-    byte[] RawEdid,
-    string? ContainerId = null);
-
-/// <summary>An active WASAPI render endpoint.</summary>
+/// <summary>An active Windows render endpoint.</summary>
 public sealed record EndpointInfo(
     string EndpointId,
     string FriendlyName,
     string DeviceDescription,
-    string? SvclCommandLineId,
     string? DriverName,
     string? DriverVersion,
-    bool IsDefault,
-    string? ContainerId);
+    bool IsDefault);
 
-/// <summary>Enumerates active display paths and their EDID from the current Windows environment.</summary>
-public interface IDisplayProvider
+/// <summary>Status of parsing a Control Panel format item.</summary>
+public enum ControlPanelParseStatus
 {
-    IReadOnlyList<DisplayInfo> GetActiveDisplays();
+    Parsed,
+    Unparsed,
+}
+
+/// <summary>One format item read from the target endpoint's Control Panel Advanced page.</summary>
+public sealed record ControlPanelFormatItem(
+    int Index,
+    string DisplayText,
+    int? Channels,
+    int? SampleRate,
+    int? EffectiveBits,
+    int? ContainerBits,
+    ControlPanelParseStatus ParseStatus,
+    string? ParseFailure);
+
+/// <summary>One speaker configuration option read from the target endpoint's speaker setup page.</summary>
+public sealed record ControlPanelSpeakerConfigurationItem(
+    int Index,
+    string DisplayText,
+    int Channels);
+
+/// <summary>Evidence and lifecycle details for one Control Panel read.</summary>
+public sealed record ControlPanelFormatSnapshot(
+    DateTimeOffset Started,
+    DateTimeOffset Completed,
+    string NavigationStrategy,
+    bool CleanupAttempted,
+    bool CleanupSucceeded,
+    string? CleanupFailureDetail);
+
+public sealed record ControlPanelFormatResult(
+    IReadOnlyList<ControlPanelFormatItem> Items,
+    IReadOnlyList<ControlPanelSpeakerConfigurationItem> SpeakerConfigurations,
+    int? MaxSupportedChannels,
+    ControlPanelFormatSnapshot Snapshot);
+
+/// <summary>Reads the target endpoint's read-only Default Format choices from Windows Control Panel.</summary>
+public interface IControlPanelFormatProvider
+{
+    ControlPanelFormatResult ReadDefaultFormats(EndpointInfo endpoint, TimeSpan timeout);
+}
+
+/// <summary>Describes a top-level Win32 window without requiring UI Automation.</summary>
+public sealed record Win32WindowInfo(IntPtr Handle, string ClassName, string Title, bool IsVisible = true);
+
+public sealed record Win32FormatReadResult(int TabIndex, int OriginalTabIndex, IReadOnlyList<string> Items);
+
+public interface IWin32ControlApi
+{
+    bool IsWindowUnicode(IntPtr handle);
+
+    bool IsWindow(IntPtr handle);
+
+    bool TrySendMessageTimeout(IntPtr handle, uint message, IntPtr wParam, IntPtr lParam, TimeSpan timeout, out IntPtr result);
+
+    bool PostMessage(IntPtr handle, uint message, IntPtr wParam, IntPtr lParam);
+
+    bool IsWindowVisible(IntPtr handle);
+
+    string GetWindowClassName(IntPtr handle);
+
+    string GetWindowText(IntPtr handle);
+
+    IReadOnlyList<IntPtr> EnumerateChildWindows(IntPtr parent);
+
+    IReadOnlyList<Win32WindowInfo> EnumerateTopLevelWindows();
+
+    bool TrySelectAdvancedTab(IntPtr dialog, TimeSpan timeout, out string observed);
+
+    bool TryReadComboBoxItems(IntPtr handle, TimeSpan timeout, out IReadOnlyList<string> items, out string diagnostic);
+
+    bool TryReadFormatItemsAcrossTabs(IntPtr dialog, TimeSpan timeout, out Win32FormatReadResult result, out string observed);
 }
 
 /// <summary>Enumerates active render endpoints via Core Audio.</summary>
@@ -38,24 +96,6 @@ public interface IAudioEndpointProvider
     EndpointInfo? GetDefaultRenderEndpoint();
 }
 
-/// <summary>Result of a WASAPI Exclusive-mode IsFormatSupported query.</summary>
-public sealed record FormatSupportResult(int HResult)
-{
-    public const int SOk = 0;
-    public const int AudclntUnsupportedFormat = unchecked((int)0x88890008);
-
-    public bool IsSupported => HResult == SOk;
-
-    public string HResultText => $"0x{HResult:X8}";
-}
-
-/// <summary>Queries endpoint format support in WASAPI Exclusive mode without initializing a stream.</summary>
-public interface IWasapiFormatProbe
-{
-    FormatSupportResult IsExclusiveFormatSupported(string endpointId, WaveFormat format);
-}
-
-/// <summary>Raw outcome of running the SVCL executable.</summary>
 public sealed record ProcessResult(int ExitCode, string StandardOutput, string StandardError);
 
 /// <summary>Runs the external SVCL process.</summary>
@@ -71,11 +111,7 @@ public interface IFileSystem
 
     byte[] ReadAllBytes(string path);
 
-    void WriteAllText(string path, string contents);
-
     void DeleteFile(string path);
-
-    void CreateDirectory(string path);
 
     string? GetFileVersion(string path);
 
@@ -85,13 +121,7 @@ public interface IFileSystem
 /// <summary>Time source, so polling windows are deterministic in tests.</summary>
 public interface IClock
 {
-    DateTimeOffset LocalNow { get; }
-
-    DateTimeOffset UtcNow { get; }
-
     void Sleep(TimeSpan duration);
-
-    TimeSpan Elapsed { get; }
 }
 
 /// <summary>Console I/O for output and interactive selection.</summary>
@@ -102,37 +132,4 @@ public interface IConsole
     void WriteError(string text);
 
     string? ReadLine();
-}
-
-/// <summary>Static machine facts included in every report.</summary>
-public sealed record SystemInfo(
-    string MachineName,
-    string OsDescription,
-    string OsVersion,
-    string Architecture,
-    string UserName,
-    string ApplicationVersion);
-
-public interface ISystemInfoProvider
-{
-    SystemInfo GetSystemInfo();
-}
-
-/// <summary>
-/// Driver metadata the spec's story 67 requires for cross-PC comparison. The Windows .NET
-/// surface cannot reach GPU or HDMI audio driver versions through any in-process API that
-/// would also satisfy story 58's "no third-party NuGet" rule, so this boundary delegates to a
-/// small PowerShell script that uses the built-in Get-CimInstance cmdlet.
-/// </summary>
-public sealed record DriverMetadata(
-    string? GpuName,
-    string? GpuDriverVersion,
-    string? GpuDriverProvider,
-    IReadOnlyList<AudioHdmiDriver> AudioHdmi);
-
-public sealed record AudioHdmiDriver(string Name, string? Version, string? Provider);
-
-public interface IDriverMetadataProvider
-{
-    DriverMetadata GetDriverMetadata();
 }
