@@ -1,4 +1,5 @@
 using AudioDeviceConfigurator.Application;
+using AudioDeviceConfigurator.Audio;
 using AudioDeviceConfigurator.Cli;
 using AudioDeviceConfigurator.Domain;
 using AudioDeviceConfigurator.Gui;
@@ -94,7 +95,11 @@ public static class Program
             fileSystem,
             Path.Combine(appDirectory, "svcl.exe"));
         var service = new DeviceConfigurationService(endpointProvider, controlPanel, svcl);
-        var viewModel = new MainViewModel(service);
+        var playback = new WasapiAudioPlaybackService();
+        var viewModel = new MainViewModel(
+            service,
+            playback,
+            resolveWaveSource: _ => WaveSource.Parse(File.ReadAllBytes(Path.Combine(appDirectory, "test_audio.wav"))));
         var app = new App();
         app.InitializeComponent();
         var window = new MainWindow(viewModel);

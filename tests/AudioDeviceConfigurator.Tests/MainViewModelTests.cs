@@ -1,5 +1,6 @@
 using AudioDeviceConfigurator.Abstractions;
 using AudioDeviceConfigurator.Application;
+using AudioDeviceConfigurator.Audio;
 using AudioDeviceConfigurator.Domain;
 using AudioDeviceConfigurator.Gui;
 using AudioDeviceConfigurator.Tests.Fakes;
@@ -88,8 +89,7 @@ public sealed class MainViewModelTests
         Assert.True(busyDuringApply);
         Assert.False(vm.IsBusy);
         Assert.Equal(SwitchStatus.Pass, result.Status);
-        Assert.True(vm.CanPlay);
-        Assert.False(vm.CanStop);
+        Assert.False(vm.CanPlay);
     }
 
     [Fact]
@@ -116,6 +116,87 @@ public sealed class MainViewModelTests
         Assert.Equal(SwitchStatus.FormatMismatch, result.Status);
         Assert.Contains("restored", vm.StatusMessage, StringComparison.OrdinalIgnoreCase);
         Assert.False(vm.CanPlay);
+    }
+
+    [Fact]
+    public async Task ApplyAsync_starts_playback_when_pass_and_source_resolved()
+    {
+        var vm = NewViewModel(out var harness);
+        SeedEndpoints(harness, "ep-1");
+        SeedOptions(harness, channels: new[] { 2 }, formats: new[]
+        {
+            new ControlPanelFormatItem(0, "16 bit, 44100 Hz", 2, 44100, 16, 16, ControlPanelParseStatus.Parsed, null),
+        });
+        harness.Svcl
+            .EnqueueSavedFormat(Format(2, 16, 44100, 0x3))
+            .EnqueueSavedFormat(Format(2, 16, 44100, 0x3));
+
+        await vm.LoadEndpointsAsync(CancellationToken.None);
+        await vm.EndpointChangedAsync(vm.Endpoints[0], CancellationToken.None);
+        vm.SelectChannelIndex(0);
+        vm.SelectFormatIndex(0);
+
+        var result = await vm.ApplyAsync(CancellationToken.None);
+
+        Assert.Equal(SwitchStatus.Pass, result.Status);
+        Assert.True(harness.Playback.IsPlaying);
+        Assert.Equal("ep-1", harness.Playback.LastEndpoint);
+        Assert.False(vm.CanApply); // apply locked during playback
+        Assert.True(vm.CanStop);
+        Assert.False(vm.CanPlay);
+    }
+
+    [Fact]
+    public async Task ApplyAsync_reports_playback_failure_without_rolling_back_audio_settings()
+    {
+        var vm = NewViewModel(out var harness);
+        SeedEndpoints(harness, "ep-1");
+        SeedOptions(harness, channels: new[] { 2 }, formats: new[]
+        {
+            new ControlPanelFormatItem(0, "16 bit, 44100 Hz", 2, 44100, 16, 16, ControlPanelParseStatus.Parsed, null),
+        });
+        harness.Svcl
+            .EnqueueSavedFormat(Format(2, 16, 44100, 0x3))
+            .EnqueueSavedFormat(Format(2, 16, 44100, 0x3));
+        harness.Playback.StartFailure = new FileNotFoundException("WAV missing");
+
+        await vm.LoadEndpointsAsync(CancellationToken.None);
+        await vm.EndpointChangedAsync(vm.Endpoints[0], CancellationToken.None);
+        vm.SelectChannelIndex(0);
+        vm.SelectFormatIndex(0);
+
+        var result = await vm.ApplyAsync(CancellationToken.None);
+
+        Assert.Equal(SwitchStatus.Pass, result.Status); // audio settings verified
+        Assert.False(harness.Playback.IsPlaying);
+        Assert.Contains("playback failed", vm.StatusMessage, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task ApplyAsync_stops_playback_before_starting_next_apply()
+    {
+        var vm = NewViewModel(out var harness);
+        SeedEndpoints(harness, "ep-1");
+        SeedOptions(harness, channels: new[] { 2 }, formats: new[]
+        {
+            new ControlPanelFormatItem(0, "16 bit, 44100 Hz", 2, 44100, 16, 16, ControlPanelParseStatus.Parsed, null),
+        });
+        harness.Svcl
+            .EnqueueSavedFormat(Format(2, 16, 44100, 0x3))
+            .EnqueueSavedFormat(Format(2, 16, 44100, 0x3))
+            .EnqueueSavedFormat(Format(2, 16, 44100, 0x3))
+            .EnqueueSavedFormat(Format(2, 16, 44100, 0x3));
+
+        await vm.LoadEndpointsAsync(CancellationToken.None);
+        await vm.EndpointChangedAsync(vm.Endpoints[0], CancellationToken.None);
+        vm.SelectChannelIndex(0);
+        vm.SelectFormatIndex(0);
+        await vm.ApplyAsync(CancellationToken.None);
+        Assert.True(harness.Playback.IsPlaying);
+
+        // Switch to a different setting — service must stop existing stream first.
+        await vm.ApplyAsync(CancellationToken.None);
+        Assert.True(harness.Playback.StopCalls >= 1);
     }
 
     private static MainViewModel NewViewModel(out GuiHarness harness)
@@ -154,6 +235,7 @@ public sealed class MainViewModelTests
         public FakeEndpointProvider Endpoints { get; } = new();
         public FakeControlPanelFormatProvider ControlPanel { get; } = new();
         public FakeSvclClient Svcl { get; } = new();
+        public FakePlaybackService Playback { get; } = new();
         public Dictionary<string, ControlPanelFormatResult> OptionsByEndpoint { get; } = new();
 
         public GuiHarness()
@@ -179,7 +261,37 @@ public sealed class MainViewModelTests
         public MainViewModel CreateViewModel()
         {
             var service = new DeviceConfigurationService(Endpoints, ControlPanel, Svcl);
-            return new MainViewModel(service, dispatcher: null);
+            return new MainViewModel(
+                service,
+                Playback,
+                createCancellation: null,
+                resolveWaveSource: _ => new WaveSource(new WaveFormat(48000, 2, 16, 4), new byte[48000]),
+                dispatcher: null);
+        }
+    }
+
+    private sealed class FakePlaybackService : IAudioPlaybackService
+    {
+        public bool IsPlaying { get; private set; }
+        public string? LastEndpoint { get; private set; }
+        public int StopCalls { get; private set; }
+        public Exception? StartFailure { get; set; }
+        public event Action<Exception>? PlaybackFailed;
+
+        public void Start(EndpointInfo endpoint, WaveSource source)
+        {
+            if (StartFailure is not null)
+            {
+                throw StartFailure;
+            }
+            IsPlaying = true;
+            LastEndpoint = endpoint.EndpointId;
+        }
+
+        public void Stop()
+        {
+            StopCalls++;
+            IsPlaying = false;
         }
     }
 }

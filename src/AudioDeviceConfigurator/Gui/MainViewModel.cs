@@ -1,6 +1,7 @@
 using System.Collections.ObjectModel;
 using AudioDeviceConfigurator.Abstractions;
 using AudioDeviceConfigurator.Application;
+using AudioDeviceConfigurator.Audio;
 
 namespace AudioDeviceConfigurator.Gui;
 
@@ -11,18 +12,25 @@ namespace AudioDeviceConfigurator.Gui;
 public sealed class MainViewModel
 {
     private readonly DeviceConfigurationService _service;
+    private readonly IAudioPlaybackService _playback;
     private readonly Func<CancellationTokenSource> _createCancellation;
+    private readonly Func<EndpointInfo, WaveSource>? _resolveWaveSource;
     private readonly Action<Action> _dispatch;
     private CancellationTokenSource? _applyCancellation;
 
     public MainViewModel(
         DeviceConfigurationService service,
+        IAudioPlaybackService playback,
         Func<CancellationTokenSource>? createCancellation = null,
+        Func<EndpointInfo, WaveSource>? resolveWaveSource = null,
         Action<Action>? dispatcher = null)
     {
         _service = service;
+        _playback = playback;
         _createCancellation = createCancellation ?? (() => new CancellationTokenSource());
+        _resolveWaveSource = resolveWaveSource;
         _dispatch = dispatcher ?? (action => action());
+        _playback.PlaybackFailed += OnPlaybackFailed;
     }
 
     public ObservableCollection<EndpointInfo> Endpoints { get; } = new();
@@ -48,11 +56,17 @@ public sealed class MainViewModel
     public bool CanApply => SelectedEndpoint is not null
         && SelectedChannelIndex is not null
         && SelectedFormatIndex is not null
-        && !IsBusy;
+        && !IsBusy
+        && !_playback.IsPlaying;
 
-    public bool CanPlay { get; private set; }
+    public bool CanPlay => SelectedEndpoint is not null
+        && !IsBusy
+        && !_playback.IsPlaying
+        && HasVerifiedSwitch;
 
-    public bool CanStop { get; private set; }
+    public bool CanStop => _playback.IsPlaying;
+
+    private bool HasVerifiedSwitch { get; set; }
 
     public async Task LoadEndpointsAsync(CancellationToken cancellationToken)
     {
@@ -109,6 +123,8 @@ public sealed class MainViewModel
         _applyCancellation = _createCancellation();
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(
             cancellationToken, _applyCancellation.Token);
+        // Stop any existing playback stream before swapping the endpoint's format.
+        _playback.Stop();
         SetBusy(true);
         SwitchResult result;
         try
@@ -122,25 +138,50 @@ public sealed class MainViewModel
         }
 
         _dispatch(() => ApplyStatusMessage(result));
+
+        if (result.Status == SwitchStatus.Pass && _resolveWaveSource is not null && SelectedEndpoint is not null)
+        {
+            try
+            {
+                var source = _resolveWaveSource(SelectedEndpoint);
+                _playback.Start(SelectedEndpoint, source);
+                _dispatch(() =>
+                {
+                    HasVerifiedSwitch = true;
+                    StatusMessage = "Switch verified; playing test audio.";
+                });
+            }
+            catch (Exception ex)
+            {
+                _dispatch(() => StatusMessage = $"Switch verified, but playback failed: {ex.Message}");
+            }
+        }
+        else if (result.Status == SwitchStatus.Pass)
+        {
+            _dispatch(() => HasVerifiedSwitch = true);
+        }
+
         return result;
+    }
+
+    public void StopPlayback()
+    {
+        _playback.Stop();
+    }
+
+    private void OnPlaybackFailed(Exception ex)
+    {
+        _dispatch(() => StatusMessage = $"Playback error: {ex.Message}");
     }
 
     public void NotePlaybackStopped()
     {
-        _dispatch(() =>
-        {
-            CanPlay = SelectedEndpoint is not null && !IsBusy;
-            CanStop = false;
-        });
+        _dispatch(() => { /* binding re-evaluates CanPlay/CanStop on next refresh */ });
     }
 
     public void NotePlaybackStarted()
     {
-        _dispatch(() =>
-        {
-            CanPlay = false;
-            CanStop = true;
-        });
+        _dispatch(() => { /* playback state is owned by the service */ });
     }
 
     private void PopulateOptions(EndpointOptionsResult result)
@@ -151,8 +192,7 @@ public sealed class MainViewModel
         SelectedEndpointOptions = null;
         SelectedChannelIndex = null;
         SelectedFormatIndex = null;
-        CanPlay = false;
-        CanStop = false;
+        HasVerifiedSwitch = false;
 
         switch (result)
         {
@@ -183,30 +223,20 @@ public sealed class MainViewModel
         {
             case SwitchStatus.Pass:
                 StatusMessage = "Switch completed and verified.";
-                CanPlay = !IsBusy;
-                CanStop = false;
                 break;
             case SwitchStatus.FormatMismatch:
                 StatusMessage = result.RollbackVerified
                     ? "Switch failed; original settings restored."
                     : "Switch failed; rollback incomplete.";
-                CanPlay = false;
-                CanStop = false;
                 break;
             case SwitchStatus.Cancelled:
                 StatusMessage = "Cancelled.";
-                CanPlay = false;
-                CanStop = false;
                 break;
             case SwitchStatus.NotApplicable:
                 StatusMessage = "Endpoint has no selectable options.";
-                CanPlay = false;
-                CanStop = false;
                 break;
             case SwitchStatus.SystemError:
                 StatusMessage = result.Message ?? "Unknown error.";
-                CanPlay = false;
-                CanStop = false;
                 break;
         }
     }

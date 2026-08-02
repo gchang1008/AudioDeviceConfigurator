@@ -97,12 +97,23 @@ public partial class MainWindow : Window
 
     private void PlayButton_OnClick(object sender, RoutedEventArgs e)
     {
-        // Wired in story #4; intentionally left empty for now so the XAML compiles.
+        ApplyButton.IsEnabled = false;
+        PlayButton.IsEnabled = false;
+        StatusText.Text = _viewModel.StatusMessage;
+        RefreshButtons();
     }
 
     private void StopButton_OnClick(object sender, RoutedEventArgs e)
     {
-        // Wired in story #4; intentionally left empty for now so the XAML compiles.
+        _viewModel.StopPlayback();
+        StatusText.Text = "Stopped.";
+        RefreshButtons();
+    }
+
+    protected override void OnClosed(EventArgs e)
+    {
+        _viewModel.StopPlayback();
+        base.OnClosed(e);
     }
 
     private void RefreshButtons()

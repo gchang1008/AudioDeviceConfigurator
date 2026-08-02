@@ -13,7 +13,9 @@ internal static class CoreAudio
     public const int ERoleConsole = 0;
     public const int DeviceStateActive = 0x00000001;
     public const uint StgmRead = 0;
+    public const int AudclntSharemodeShared = 0;
     public const int AudclntSharemodeExclusive = 1;
+    public const int ClsctxAll = 0x17;
 
     [ComImport]
     [Guid("A95664D2-9614-4F35-A746-DE8DB63617E6")]
@@ -78,7 +80,7 @@ internal static class CoreAudio
     public interface IAudioClient
     {
         [PreserveSig] int Initialize(int shareMode, int streamFlags, long bufferDuration,
-            long periodicity, IntPtr format, IntPtr sessionGuid);
+            long periodicity, IntPtr format, IntPtr audioSessionGuid);
 
         [PreserveSig] int GetBufferSize(out uint frames);
 
@@ -101,6 +103,28 @@ internal static class CoreAudio
         [PreserveSig] int SetEventHandle(IntPtr handle);
 
         [PreserveSig] int GetService(ref Guid iid, [MarshalAs(UnmanagedType.IUnknown)] out object instance);
+    }
+
+    [ComImport]
+    [Guid("F294AC0C-5086-46F2-9006-CF2B6BCAF7B6")]
+    [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    public interface IAudioRenderClient
+    {
+        IntPtr GetBuffer(uint numFramesRequested);
+
+        [PreserveSig] int ReleaseBuffer(uint numFramesWritten, int flags);
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct WaveFormatEx
+    {
+        public ushort wFormatTag;
+        public ushort nChannels;
+        public uint nSamplesPerSec;
+        public uint nAvgBytesPerSec;
+        public ushort nBlockAlign;
+        public ushort wBitsPerSample;
+        public ushort cbSize;
     }
 
     [StructLayout(LayoutKind.Sequential, Pack = 4)]
