@@ -1,3 +1,4 @@
+using System.ComponentModel;
 using AudioDeviceConfigurator.Abstractions;
 using AudioDeviceConfigurator.Application;
 using AudioDeviceConfigurator.Audio;
@@ -144,6 +145,35 @@ public sealed class MainViewModelTests
         Assert.False(vm.CanApply); // apply locked during playback
         Assert.True(vm.CanStop);
         Assert.False(vm.CanPlay);
+        Assert.Single(harness.ControlPanel.EndpointIds);
+    }
+
+    [Fact]
+    public async Task Play_starts_the_verified_endpoint_again_after_stop()
+    {
+        var vm = NewViewModel(out var harness);
+        SeedEndpoints(harness, "ep-1");
+        SeedOptions(harness, channels: new[] { 2 }, formats: new[]
+        {
+            new ControlPanelFormatItem(0, "16 bit, 44100 Hz", 2, 44100, 16, 16, ControlPanelParseStatus.Parsed, null),
+        });
+        harness.Svcl
+            .EnqueueSavedFormat(Format(2, 16, 44100, 0x3))
+            .EnqueueSavedFormat(Format(2, 16, 44100, 0x3));
+
+        await vm.LoadEndpointsAsync(CancellationToken.None);
+        await vm.EndpointChangedAsync(vm.Endpoints[0], CancellationToken.None);
+        vm.SelectChannelIndex(0);
+        vm.SelectFormatIndex(0);
+        await vm.ApplyAsync(CancellationToken.None);
+        vm.StopPlayback();
+
+        vm.Play();
+
+        Assert.True(harness.Playback.IsPlaying);
+        Assert.Equal(2, harness.Playback.StartCalls);
+        Assert.True(vm.CanStop);
+        Assert.False(vm.CanPlay);
     }
 
     [Fact]
@@ -272,11 +302,22 @@ public sealed class MainViewModelTests
 
     private sealed class FakePlaybackService : IAudioPlaybackService
     {
-        public bool IsPlaying { get; private set; }
+        private bool _isPlaying;
+        public bool IsPlaying
+        {
+            get => _isPlaying;
+            private set
+            {
+                _isPlaying = value;
+                PropertyChanged?.Invoke(this, new(nameof(IsPlaying)));
+            }
+        }
         public string? LastEndpoint { get; private set; }
+        public int StartCalls { get; private set; }
         public int StopCalls { get; private set; }
         public Exception? StartFailure { get; set; }
         public event Action<Exception>? PlaybackFailed;
+        public event PropertyChangedEventHandler? PropertyChanged;
 
         public void Start(EndpointInfo endpoint, WaveSource source)
         {
@@ -284,8 +325,9 @@ public sealed class MainViewModelTests
             {
                 throw StartFailure;
             }
-            IsPlaying = true;
             LastEndpoint = endpoint.EndpointId;
+            StartCalls++;
+            IsPlaying = true;
         }
 
         public void Stop()

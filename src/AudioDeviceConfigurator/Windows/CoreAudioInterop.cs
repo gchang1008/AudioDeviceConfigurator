@@ -15,6 +15,7 @@ internal static class CoreAudio
     public const uint StgmRead = 0;
     public const int AudclntSharemodeShared = 0;
     public const int AudclntSharemodeExclusive = 1;
+    public const int AudclntStreamflagsEventcallback = 0x00040000;
     public const int ClsctxAll = 0x17;
 
     [ComImport]
@@ -106,11 +107,11 @@ internal static class CoreAudio
     }
 
     [ComImport]
-    [Guid("F294AC0C-5086-46F2-9006-CF2B6BCAF7B6")]
+    [Guid("F294ACFC-3146-4483-A7BF-ADDCA7C260E2")]
     [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
     public interface IAudioRenderClient
     {
-        IntPtr GetBuffer(uint numFramesRequested);
+        [PreserveSig] int GetBuffer(uint numFramesRequested, out IntPtr data);
 
         [PreserveSig] int ReleaseBuffer(uint numFramesWritten, int flags);
     }

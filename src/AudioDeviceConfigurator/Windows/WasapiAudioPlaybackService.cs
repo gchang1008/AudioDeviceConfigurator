@@ -1,3 +1,4 @@
+using System.ComponentModel;
 using System.Runtime.InteropServices;
 using System.Runtime.Versioning;
 using AudioDeviceConfigurator.Abstractions;
@@ -25,6 +26,11 @@ public sealed class WasapiAudioPlaybackService : IAudioPlaybackService, IDisposa
 
     public event Action<Exception>? PlaybackFailed;
 
+    public event PropertyChangedEventHandler? PropertyChanged;
+
+    private void OnPropertyChanged(string propertyName) =>
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propertyName));
+
     public void Start(EndpointInfo endpoint, WaveSource source)
     {
         if (endpoint is null) throw new ArgumentNullException(nameof(endpoint));
@@ -32,17 +38,30 @@ public sealed class WasapiAudioPlaybackService : IAudioPlaybackService, IDisposa
 
         StopInternal();
 
-        var thread = new Thread(() => RenderLoop(endpoint.EndpointId, source))
+        var stream = WasapiRenderStream.Open(endpoint.EndpointId, source);
+        try
+        {
+            stream.Start();
+        }
+        catch
+        {
+            stream.Dispose();
+            throw;
+        }
+
+        var thread = new Thread(() => RenderLoop(stream))
         {
             IsBackground = true,
             Name = "AudioDeviceConfigurator.WasapiRender",
         };
         lock (_gate)
         {
+            _stream = stream;
             _renderThread = thread;
             _lastError = null;
         }
         _isPlaying = true;
+        OnPropertyChanged(nameof(IsPlaying));
         thread.Start();
     }
 
@@ -71,17 +90,14 @@ public sealed class WasapiAudioPlaybackService : IAudioPlaybackService, IDisposa
         }
         try { stream?.Dispose(); } catch { }
         _isPlaying = false;
+        OnPropertyChanged(nameof(IsPlaying));
     }
 
-    private void RenderLoop(string endpointId, WaveSource source)
+    private void RenderLoop(WasapiRenderStream stream)
     {
-        WasapiRenderStream? stream = null;
         try
         {
-            stream = WasapiRenderStream.Open(endpointId, source.Format);
-            lock (_gate) { _stream = stream; }
-            stream.Start();
-            stream.RunLoop(source);
+            stream.RunLoop();
         }
         catch (Exception ex)
         {
@@ -92,6 +108,7 @@ public sealed class WasapiAudioPlaybackService : IAudioPlaybackService, IDisposa
         {
             _isPlaying = false;
             try { stream?.Dispose(); } catch { }
+            OnPropertyChanged(nameof(IsPlaying));
         }
     }
 }
@@ -101,6 +118,7 @@ internal sealed class WasapiRenderStream : IDisposable
     private readonly object _audioClient;
     private readonly object _renderClient;
     private readonly WaveFormat _format;
+    private readonly WaveSource _source;
     private readonly uint _bufferFrameCount;
     private readonly uint _frameSize;
     private readonly ManualResetEventSlim _stop = new(false);
@@ -111,20 +129,21 @@ internal sealed class WasapiRenderStream : IDisposable
     private WasapiRenderStream(
         object audioClient,
         object renderClient,
-        WaveFormat format,
+        WaveSource source,
         uint bufferFrameCount,
         IntPtr renderEventHandle)
     {
         _audioClient = audioClient;
         _renderClient = renderClient;
-        _format = format;
+        _source = source;
+        _format = source.Format;
         _bufferFrameCount = bufferFrameCount;
-        _frameSize = (uint)format.BytesPerFrame;
+        _frameSize = (uint)source.Format.BytesPerFrame;
         _renderEventHandle = renderEventHandle;
         _eventHandlePin = GCHandle.Alloc(renderEventHandle, GCHandleType.Normal);
     }
 
-    public static WasapiRenderStream Open(string endpointId, WaveFormat format)
+    public static WasapiRenderStream Open(string endpointId, WaveSource source)
     {
         var device = ActivateDevice(endpointId);
         try
@@ -137,49 +156,34 @@ internal sealed class WasapiRenderStream : IDisposable
             }
             var audioClient = (CoreAudio.IAudioClient)audioClientObj;
 
-            // 1. Validate that the endpoint mix format matches the WAV exactly — SPEC forbids resampling.
             var mixHr = audioClient.GetMixFormat(out var mixPtr);
             if (mixHr < 0)
             {
                 throw new InvalidOperationException($"IAudioClient.GetMixFormat failed (HRESULT 0x{mixHr:X8}).");
             }
-            try
-            {
-                var mix = Marshal.PtrToStructure<CoreAudio.WaveFormatEx>(mixPtr);
-                if (mix.nSamplesPerSec != format.SampleRate
-                    || mix.nChannels != format.Channels
-                    || mix.wBitsPerSample != format.BitsPerSample)
-                {
-                    throw new InvalidOperationException(
-                        $"Endpoint mix format ({mix.nSamplesPerSec} Hz, {mix.nChannels} ch, {mix.wBitsPerSample} bit) " +
-                        $"does not match WAV ({format.SampleRate} Hz, {format.Channels} ch, {format.BitsPerSample} bit).");
-                }
-            }
-            finally
-            {
-                Marshal.FreeHGlobal(mixPtr);
-            }
 
-            // 2. Initialize Shared Mode with the same format pointer.
-            var waveFormatPtr = Marshal.AllocHGlobal(Marshal.SizeOf<CoreAudio.WaveFormatEx>());
+            WaveSource converted;
+            CoreAudio.WaveFormatEx mix;
+            var mixTag = Marshal.ReadInt16(mixPtr, 0);
+            mix = Marshal.PtrToStructure<CoreAudio.WaveFormatEx>(mixPtr);
+            var mixFormat = new WaveFormat(
+                (int)mix.nSamplesPerSec,
+                mix.nChannels,
+                mix.wBitsPerSample,
+                mix.nBlockAlign);
+            var isFloat = mixTag == 0x0003
+                || (mixTag == unchecked((short)0xFFFE)
+                    && Marshal.ReadInt32(mixPtr, 24) == 0x00000003);
+            converted = SharedModePcmConverter.Convert(source, mixFormat, isFloat);
+
             try
             {
-                audioClient.GetMixFormat(out var mixForInit);
-                try
-                {
-                    var mix = Marshal.PtrToStructure<CoreAudio.WaveFormatEx>(mixForInit);
-                    Marshal.StructureToPtr(mix, waveFormatPtr, false);
-                }
-                finally
-                {
-                    Marshal.FreeHGlobal(mixForInit);
-                }
                 var hr = audioClient.Initialize(
                     shareMode: CoreAudio.AudclntSharemodeShared,
-                    streamFlags: 0,
+                    streamFlags: CoreAudio.AudclntStreamflagsEventcallback,
                     bufferDuration: 0,
                     periodicity: 0,
-                    format: waveFormatPtr,
+                    format: mixPtr,
                     audioSessionGuid: IntPtr.Zero);
                 if (hr < 0)
                 {
@@ -188,7 +192,7 @@ internal sealed class WasapiRenderStream : IDisposable
             }
             finally
             {
-                Marshal.FreeHGlobal(waveFormatPtr);
+                Marshal.FreeHGlobal(mixPtr);
             }
 
             uint bufferFrameCount;
@@ -217,7 +221,7 @@ internal sealed class WasapiRenderStream : IDisposable
                 throw new InvalidOperationException($"IAudioClient.SetEventHandle failed (HRESULT 0x{setHr:X8}).");
             }
 
-            return new WasapiRenderStream(audioClient, renderClient, format, bufferFrameCount, handle);
+            return new WasapiRenderStream(audioClient, renderClient, converted, bufferFrameCount, handle);
         }
         catch
         {
@@ -226,56 +230,80 @@ internal sealed class WasapiRenderStream : IDisposable
         }
     }
 
-    public void Start() => ((CoreAudio.IAudioClient)_audioClient).Start();
+    public void Start()
+    {
+        WriteAvailableFrames();
+        var hr = ((CoreAudio.IAudioClient)_audioClient).Start();
+        if (hr < 0)
+        {
+            throw new InvalidOperationException($"IAudioClient.Start failed (HRESULT 0x{hr:X8}).");
+        }
+    }
 
     public void RequestStop() => _stop.Set();
 
-    public void RunLoop(WaveSource source)
+    public void RunLoop()
     {
         while (!_stop.IsSet)
         {
-            uint padding;
-            ((CoreAudio.IAudioClient)_audioClient).GetCurrentPadding(out padding);
-            var framesAvailable = _bufferFrameCount - padding;
-            if (framesAvailable == 0)
+            if (!WriteAvailableFrames())
             {
                 WaitForEvent(TimeSpan.FromSeconds(1));
-                continue;
             }
-
-            var bytesPerFrame = (int)_frameSize;
-            var bytesRemaining = source.PcmData.Length - _pcmPosition;
-            if (bytesRemaining <= 0)
-            {
-                _pcmPosition = 0; // loop
-                bytesRemaining = source.PcmData.Length;
-            }
-
-            var bytesToWrite = Math.Min((int)(framesAvailable * _frameSize), bytesRemaining);
-            var framesToWrite = (uint)(bytesToWrite / bytesPerFrame);
-            if (framesToWrite == 0)
-            {
-                WaitForEvent(TimeSpan.FromSeconds(1));
-                continue;
-            }
-            bytesToWrite = (int)(framesToWrite * _frameSize);
-
-            var bufferPtr = ((CoreAudio.IAudioRenderClient)_renderClient).GetBuffer(framesToWrite);
-            if (bufferPtr == IntPtr.Zero)
-            {
-                throw new InvalidOperationException("IAudioRenderClient.GetBuffer returned null.");
-            }
-
-            Marshal.Copy(source.PcmData, _pcmPosition, bufferPtr, bytesToWrite);
-            var releaseHr = ((CoreAudio.IAudioRenderClient)_renderClient).ReleaseBuffer(framesToWrite, 0);
-            if (releaseHr < 0)
-            {
-                throw new InvalidOperationException($"IAudioRenderClient.ReleaseBuffer failed (HRESULT 0x{releaseHr:X8}).");
-            }
-
-            _pcmPosition += bytesToWrite;
-            WaitForEvent(TimeSpan.FromSeconds(1));
         }
+    }
+
+    private bool WriteAvailableFrames()
+    {
+        var paddingHr = ((CoreAudio.IAudioClient)_audioClient).GetCurrentPadding(out var padding);
+        if (paddingHr < 0)
+        {
+            throw new InvalidOperationException(
+                $"IAudioClient.GetCurrentPadding failed (HRESULT 0x{paddingHr:X8}).");
+        }
+        var framesAvailable = _bufferFrameCount - padding;
+        if (framesAvailable == 0)
+        {
+            return false;
+        }
+
+        var bytesPerFrame = (int)_frameSize;
+        var bytesRemaining = _source.PcmData.Length - _pcmPosition;
+        if (bytesRemaining <= 0)
+        {
+            _pcmPosition = 0;
+            bytesRemaining = _source.PcmData.Length;
+        }
+
+        var bytesToWrite = Math.Min((int)(framesAvailable * _frameSize), bytesRemaining);
+        var framesToWrite = (uint)(bytesToWrite / bytesPerFrame);
+        if (framesToWrite == 0)
+        {
+            return false;
+        }
+        bytesToWrite = (int)(framesToWrite * _frameSize);
+
+        var getBufferHr = ((CoreAudio.IAudioRenderClient)_renderClient)
+            .GetBuffer(framesToWrite, out var bufferPtr);
+        if (getBufferHr < 0)
+        {
+            throw new InvalidOperationException(
+                $"IAudioRenderClient.GetBuffer failed (HRESULT 0x{getBufferHr:X8}).");
+        }
+        if (bufferPtr == IntPtr.Zero)
+        {
+            throw new InvalidOperationException("IAudioRenderClient.GetBuffer returned null.");
+        }
+
+        Marshal.Copy(_source.PcmData, _pcmPosition, bufferPtr, bytesToWrite);
+        var releaseHr = ((CoreAudio.IAudioRenderClient)_renderClient).ReleaseBuffer(framesToWrite, 0);
+        if (releaseHr < 0)
+        {
+            throw new InvalidOperationException($"IAudioRenderClient.ReleaseBuffer failed (HRESULT 0x{releaseHr:X8}).");
+        }
+
+        _pcmPosition += bytesToWrite;
+        return true;
     }
 
     public void Dispose()

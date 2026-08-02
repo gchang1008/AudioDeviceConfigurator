@@ -1,7 +1,8 @@
 <Window x:Class="AudioDeviceConfigurator.Gui.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="AudioDeviceConfigurator" Height="320" Width="480">
+        Title="AudioDeviceConfigurator" Height="320" Width="480"
+        AutomationProperties.AutomationId="AudioDeviceConfigurator.MainWindow">
     <Grid Margin="12">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />
@@ -16,11 +17,20 @@
 
         <TextBlock Grid.Row="0" Text="Playback endpoint" Margin="0,0,0,4" />
         <ComboBox Grid.Row="1" x:Name="EndpointCombo"
+                  AutomationProperties.AutomationId="EndpointCombo"
                   DisplayMemberPath="FriendlyName"
-                  SelectionChanged="EndpointCombo_OnSelectionChanged" />
+                  SelectionChanged="EndpointCombo_OnSelectionChanged">
+            <ComboBox.ItemContainerStyle>
+                <Style TargetType="ComboBoxItem">
+                    <Setter Property="AutomationProperties.Name" Value="{Binding FriendlyName}" />
+                    <Setter Property="AutomationProperties.HelpText" Value="{Binding EndpointId}" />
+                </Style>
+            </ComboBox.ItemContainerStyle>
+        </ComboBox>
 
         <TextBlock Grid.Row="2" Text="Speaker channels" Margin="0,8,0,4" />
         <ComboBox Grid.Row="3" x:Name="ChannelCombo"
+                  AutomationProperties.AutomationId="ChannelCombo"
                   SelectionChanged="ChannelCombo_OnSelectionChanged">
             <ComboBox.ItemTemplate>
                 <DataTemplate>
@@ -31,16 +41,30 @@
 
         <TextBlock Grid.Row="4" Text="Default format" Margin="0,8,0,4" />
         <ComboBox Grid.Row="5" x:Name="FormatCombo"
+                  AutomationProperties.AutomationId="FormatCombo"
                   DisplayMemberPath="DisplayText"
-                  SelectionChanged="FormatCombo_OnSelectionChanged" />
+                  SelectionChanged="FormatCombo_OnSelectionChanged">
+            <ComboBox.ItemContainerStyle>
+                <Style TargetType="ComboBoxItem">
+                    <Setter Property="AutomationProperties.Name" Value="{Binding DisplayText}" />
+                </Style>
+            </ComboBox.ItemContainerStyle>
+        </ComboBox>
 
         <StackPanel Grid.Row="6" Orientation="Horizontal" Margin="0,12,0,0">
-            <Button x:Name="ApplyButton" Content="Apply" Click="ApplyButton_OnClick" />
-            <Button x:Name="PlayButton" Content="Play" Click="PlayButton_OnClick" />
-            <Button x:Name="StopButton" Content="Stop" Click="StopButton_OnClick" />
+            <Button x:Name="ApplyButton" Content="Apply" Click="ApplyButton_OnClick"
+                    AutomationProperties.AutomationId="ApplyButton"
+                    IsEnabled="{Binding CanApply}" />
+            <Button x:Name="PlayButton" Content="Play" Click="PlayButton_OnClick"
+                    AutomationProperties.AutomationId="PlayButton"
+                    IsEnabled="{Binding CanPlay}" />
+            <Button x:Name="StopButton" Content="Stop" Click="StopButton_OnClick"
+                    AutomationProperties.AutomationId="StopButton"
+                    IsEnabled="{Binding CanStop}" />
         </StackPanel>
 
         <TextBlock Grid.Row="7" x:Name="StatusText" VerticalAlignment="Bottom"
-                   TextWrapping="Wrap" />
+                   AutomationProperties.AutomationId="StatusText"
+                   Text="{Binding StatusMessage}" TextWrapping="Wrap" />
     </Grid>
 </Window>

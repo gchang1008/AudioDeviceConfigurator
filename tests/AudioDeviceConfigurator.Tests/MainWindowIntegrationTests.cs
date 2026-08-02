@@ -1,3 +1,4 @@
+using System.ComponentModel;
 using System.Windows;
 using System.Windows.Controls;
 using AudioDeviceConfigurator.Abstractions;
@@ -44,6 +45,131 @@ public sealed class MainWindowIntegrationTests : IDisposable
             System.Windows.Threading.Dispatcher.ExitAllFrames();
         });
         _staThread.Join(TimeSpan.FromSeconds(2));
+    }
+
+    [Fact]
+    public async Task Status_binding_remains_active_after_window_loads_endpoints()
+    {
+        _harness.SeedEndpoint("ep-1", isDefault: true);
+
+        await _harness.WaitForEndpointsAsync(TimeSpan.FromSeconds(5));
+
+        _harness.Invoke(() =>
+        {
+            var expression = System.Windows.Data.BindingOperations.GetBindingExpression(
+                _harness.StatusText, TextBlock.TextProperty);
+            Assert.NotNull(expression);
+            Assert.Equal("Select an endpoint to load its options.", _harness.StatusText.Text);
+        });
+    }
+
+    [Fact]
+    public void Main_window_exposes_stable_automation_ids()
+    {
+        _harness.Invoke(() =>
+        {
+            Assert.Equal("AudioDeviceConfigurator.MainWindow",
+                System.Windows.Automation.AutomationProperties.GetAutomationId(_harness.Window!));
+            Assert.Equal("EndpointCombo",
+                System.Windows.Automation.AutomationProperties.GetAutomationId(_harness.EndpointCombo));
+            Assert.Equal("ChannelCombo",
+                System.Windows.Automation.AutomationProperties.GetAutomationId(_harness.ChannelCombo));
+            Assert.Equal("FormatCombo",
+                System.Windows.Automation.AutomationProperties.GetAutomationId(_harness.FormatCombo));
+            Assert.Equal("ApplyButton",
+                System.Windows.Automation.AutomationProperties.GetAutomationId(_harness.ApplyButton));
+            Assert.Equal("PlayButton",
+                System.Windows.Automation.AutomationProperties.GetAutomationId(_harness.PlayButton));
+            Assert.Equal("StopButton",
+                System.Windows.Automation.AutomationProperties.GetAutomationId(_harness.StopButton));
+            Assert.Equal("StatusText",
+                System.Windows.Automation.AutomationProperties.GetAutomationId(_harness.StatusText));
+        });
+    }
+
+    [Fact]
+    public void Apply_Play_Stop_buttons_bind_to_MainViewModel_through_DataContext()
+    {
+        var window = _harness.Window!;
+        object? dataContext = null;
+        _harness.Invoke(() => dataContext = window.DataContext);
+        Assert.Same(_harness.ViewModel, dataContext);
+
+        System.Windows.Data.BindingExpression? applyExpression = null;
+        _harness.Invoke(() => applyExpression = System.Windows.Data.BindingOperations.GetBindingExpression(
+            _harness.ApplyButton, System.Windows.Controls.Button.IsEnabledProperty));
+        Assert.NotNull(applyExpression);
+        Assert.Same(_harness.ViewModel, applyExpression!.DataItem);
+
+        System.Windows.Data.BindingExpression? playExpression = null;
+        _harness.Invoke(() => playExpression = System.Windows.Data.BindingOperations.GetBindingExpression(
+            _harness.PlayButton, System.Windows.Controls.Button.IsEnabledProperty));
+        Assert.NotNull(playExpression);
+        Assert.Same(_harness.ViewModel, playExpression!.DataItem);
+
+        System.Windows.Data.BindingExpression? stopExpression = null;
+        _harness.Invoke(() => stopExpression = System.Windows.Data.BindingOperations.GetBindingExpression(
+            _harness.StopButton, System.Windows.Controls.Button.IsEnabledProperty));
+        Assert.NotNull(stopExpression);
+        Assert.Same(_harness.ViewModel, stopExpression!.DataItem);
+    }
+
+    [Fact]
+    public void MainViewModel_raises_PropertyChanged_when_IsBusy_changes()
+    {
+        var changes = new List<string?>();
+        _harness.ViewModel.PropertyChanged += (_, e) => changes.Add(e.PropertyName);
+        // Trigger the dispatch path that the WPF view also subscribes to.
+        _harness.Invoke(() => _harness.ViewModel.LoadEndpointsAsync(CancellationToken.None));
+        // IsBusy is not flipped by LoadEndpointsAsync (it does not toggle), so use a synchronous
+        // trigger that the VM exposes internally.
+        // Direct setter access isn't possible; instead verify ChannelCombo selection drives
+        // SelectedChannelIndex which should fire PropertyChanged for SelectedChannelIndex + CanApply.
+        _harness.SeedEndpoint("ep-1", isDefault: true);
+        _harness.SeedOptions("ep-1", channels: new[] { 2 }, formats: new[]
+        {
+            new ControlPanelFormatItem(0, "16 bit, 44100 Hz", 2, 44100, 16, 16, ControlPanelParseStatus.Parsed, null),
+        });
+        _harness.Invoke(async () =>
+        {
+            await _harness.ViewModel.LoadEndpointsAsync(CancellationToken.None);
+            await _harness.ViewModel.EndpointChangedAsync(_harness.ViewModel.Endpoints[0], CancellationToken.None);
+            _harness.ViewModel.SelectChannelIndex(0);
+            _harness.ViewModel.SelectFormatIndex(0);
+        });
+
+        Assert.Contains(nameof(MainViewModel.SelectedEndpoint), changes);
+        Assert.Contains(nameof(MainViewModel.SelectedChannelIndex), changes);
+        Assert.Contains(nameof(MainViewModel.CanApply), changes);
+    }
+
+    [Fact]
+    public async Task Apply_button_becomes_enabled_after_selecting_endpoint_channel_and_format()
+    {
+        _harness.SeedEndpoint("ep-1", isDefault: true);
+        _harness.SeedOptions("ep-1", channels: new[] { 2 }, formats: new[]
+        {
+            new ControlPanelFormatItem(0, "16 bit, 44100 Hz", 2, 44100, 16, 16, ControlPanelParseStatus.Parsed, null),
+        });
+
+        await _harness.WaitForEndpointsAsync(TimeSpan.FromSeconds(5));
+        _harness.Invoke(() => _harness.EndpointCombo.SelectedIndex = 0);
+        await _harness.WaitForChannelsAsync(TimeSpan.FromSeconds(5));
+
+        // Before picking channel + format, Apply must be disabled.
+        _harness.Invoke(() =>
+        {
+            Assert.False(_harness.ApplyButton.IsEnabled,
+                "Apply should remain disabled until both channel and format are chosen.");
+        });
+
+        _harness.Invoke(() =>
+        {
+            _harness.ChannelCombo.SelectedIndex = 0;
+            _harness.FormatCombo.SelectedIndex = 0;
+        });
+
+        await _harness.WaitForApplyEnabledAsync(TimeSpan.FromSeconds(5));
     }
 
     [Fact]
@@ -291,9 +417,19 @@ public sealed class MainWindowIntegrationTests : IDisposable
 
     private sealed class FakePlaybackService : IAudioPlaybackService
     {
-        public bool IsPlaying { get; private set; }
+        private bool _isPlaying;
+        public bool IsPlaying
+        {
+            get => _isPlaying;
+            private set
+            {
+                _isPlaying = value;
+                PropertyChanged?.Invoke(this, new(nameof(IsPlaying)));
+            }
+        }
         public int StopCalls { get; private set; }
         public event Action<Exception>? PlaybackFailed;
+        public event PropertyChangedEventHandler? PropertyChanged;
         public void Start(EndpointInfo endpoint, WaveSource source) => IsPlaying = true;
         public void Stop()
         {

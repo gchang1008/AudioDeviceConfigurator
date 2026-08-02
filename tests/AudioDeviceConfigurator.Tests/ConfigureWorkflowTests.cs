@@ -26,6 +26,7 @@ public sealed class ConfigureWorkflowTests
             $"Save:{AppHarness.DefaultEndpointId}",
         ], harness.Svcl.Operations);
         Assert.Contains("Switch completed and verified", harness.ConsoleText);
+        Assert.Single(harness.ControlPanelFormats.EndpointIds);
     }
 
     [Fact]

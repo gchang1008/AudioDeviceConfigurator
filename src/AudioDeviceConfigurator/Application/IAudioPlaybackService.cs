@@ -1,3 +1,4 @@
+using System.ComponentModel;
 using AudioDeviceConfigurator.Abstractions;
 using AudioDeviceConfigurator.Audio;
 
@@ -8,7 +9,7 @@ namespace AudioDeviceConfigurator.Application;
 /// render thread, exposes Start/Stop, and raises <see cref="PlaybackFailed"/> if the stream dies.
 /// Errors must never roll back a previously verified audio configuration.
 /// </summary>
-public interface IAudioPlaybackService
+public interface IAudioPlaybackService : INotifyPropertyChanged
 {
     bool IsPlaying { get; }
 
@@ -24,6 +25,7 @@ public sealed class NoOpAudioPlaybackService : IAudioPlaybackService
 {
     public bool IsPlaying => false;
     public event Action<Exception>? PlaybackFailed { add { } remove { } }
+    public event PropertyChangedEventHandler? PropertyChanged { add { } remove { } }
     public void Start(EndpointInfo endpoint, WaveSource source) { }
     public void Stop() { }
 }

@@ -28,11 +28,12 @@ public abstract record EndpointOptionsResult
 {
     private EndpointOptionsResult() { }
 
-    public sealed record Available(EndpointOptions Options) : EndpointOptionsResult;
+    public sealed record Available(
+        EndpointOptions Options,
+        ControlPanelFormatResult Source) : EndpointOptionsResult;
 
-    public sealed record NotApplicable : EndpointOptionsResult;
-
-    public static readonly EndpointOptionsResult NotApplicableInstance = new NotApplicable();
+    public sealed record NotApplicable(
+        ControlPanelFormatResult Source) : EndpointOptionsResult;
 }
 
 /// <summary>Status enum for a configuration switch.</summary>
@@ -77,10 +78,14 @@ public sealed class DeviceConfigurationService
         Task.FromResult(_endpoints.GetActiveRenderEndpoints());
 
     /// <summary>Reads the Control Panel catalog for the endpoint and exposes selectable channels and formats.</summary>
-    public Task<EndpointOptionsResult> GetOptionsAsync(EndpointInfo endpoint, CancellationToken cancellationToken)
+    public async Task<EndpointOptionsResult> GetOptionsAsync(
+        EndpointInfo endpoint,
+        CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        var result = _controlPanel.ReadDefaultFormats(endpoint, ControlPanelTimeout);
+        var result = await Task.Run(
+            () => _controlPanel.ReadDefaultFormats(endpoint, ControlPanelTimeout),
+            cancellationToken).ConfigureAwait(false);
 
         var channels = result.SpeakerConfigurations
             .Select(item => item.Channels)
@@ -96,27 +101,23 @@ public sealed class DeviceConfigurationService
 
         if (channels.Length == 0 || formats.Length == 0)
         {
-            return Task.FromResult<EndpointOptionsResult>(EndpointOptionsResult.NotApplicableInstance);
+            return new EndpointOptionsResult.NotApplicable(result);
         }
 
-        return Task.FromResult<EndpointOptionsResult>(
-            new EndpointOptionsResult.Available(new EndpointOptions(channels, formats)));
+        return new EndpointOptionsResult.Available(
+            new EndpointOptions(channels, formats),
+            result);
     }
 
     /// <summary>Runs the SVCL save/apply/verify/rollback transaction for the given endpoint.</summary>
     public async Task<SwitchResult> ApplyAsync(
         EndpointInfo endpoint,
+        EndpointOptions loadedOptions,
         int channels,
         int formatIndex,
         CancellationToken cancellationToken)
     {
-        var optionsResult = await GetOptionsAsync(endpoint, cancellationToken).ConfigureAwait(false);
-        if (optionsResult is EndpointOptionsResult.NotApplicable)
-        {
-            return new SwitchResult(SwitchStatus.NotApplicable, null, RollbackVerified: true);
-        }
-
-        var options = ((EndpointOptionsResult.Available)optionsResult).Options;
+        var options = loadedOptions;
         if (formatIndex < 0 || formatIndex >= options.Formats.Count
             || Array.IndexOf(options.Channels.ToArray(), channels) < 0)
         {

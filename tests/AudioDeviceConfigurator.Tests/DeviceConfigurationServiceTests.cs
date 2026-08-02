@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using AudioDeviceConfigurator.Abstractions;
 using AudioDeviceConfigurator.Application;
 using AudioDeviceConfigurator.Domain;
@@ -17,6 +18,36 @@ public sealed class DeviceConfigurationServiceTests
 
         Assert.Equal(new[] { "endpoint-1", "endpoint-2" }, endpoints.Select(item => item.EndpointId).ToArray());
         Assert.True(endpoints.Single(item => item.EndpointId == "endpoint-1").IsDefault);
+    }
+
+    [Fact]
+    public async Task GetOptions_does_not_block_the_calling_thread()
+    {
+        var harness = Service();
+        using var entered = new ManualResetEventSlim();
+        using var release = new ManualResetEventSlim();
+        harness.ControlPanel.Provider = (_, _) =>
+        {
+            entered.Set();
+            release.Wait(TimeSpan.FromSeconds(5));
+            return new ControlPanelFormatResult(
+                Array.Empty<ControlPanelFormatItem>(),
+                Array.Empty<ControlPanelSpeakerConfigurationItem>(),
+                null,
+                new ControlPanelFormatSnapshot(
+                    DateTimeOffset.MinValue, DateTimeOffset.MinValue, "fake", true, true, null));
+        };
+
+        var service = harness.CreateService();
+        var started = Stopwatch.GetTimestamp();
+        var returnedTask = service.GetOptionsAsync(Endpoint("endpoint-1"), CancellationToken.None);
+        var elapsed = Stopwatch.GetElapsedTime(started);
+
+        Assert.True(elapsed < TimeSpan.FromMilliseconds(500), $"Call blocked for {elapsed}.");
+        Assert.False(returnedTask.IsCompleted);
+        Assert.True(entered.Wait(TimeSpan.FromSeconds(2)));
+        release.Set();
+        await returnedTask;
     }
 
     [Fact]
@@ -69,7 +100,7 @@ public sealed class DeviceConfigurationServiceTests
             .EnqueueSavedFormat(Format(2, 16, 44100, 0x3))
             .EnqueueSavedFormat(Format(2, 16, 44100, 0x3));
 
-        var result = await harness.CreateService().ApplyAsync(Endpoint("endpoint-1"), 2, 0, CancellationToken.None);
+        var result = await Apply(harness, Endpoint("endpoint-1"), 2, 0, CancellationToken.None);
 
         Assert.Equal(SwitchStatus.Pass, result.Status);
         Assert.Contains("SetSpeakers:endpoint-1:3", harness.Svcl.Operations);
@@ -92,7 +123,7 @@ public sealed class DeviceConfigurationServiceTests
             .EnqueueSavedFormat(Format(2, 16, 44100, 0x33))
             .EnqueueSavedFormat(Format(2, 16, 44100, 0x3));
 
-        var result = await harness.CreateService().ApplyAsync(Endpoint("endpoint-1"), 2, 0, CancellationToken.None);
+        var result = await Apply(harness, Endpoint("endpoint-1"), 2, 0, CancellationToken.None);
 
         Assert.Equal(SwitchStatus.FormatMismatch, result.Status);
         Assert.True(result.RollbackVerified);
@@ -113,7 +144,7 @@ public sealed class DeviceConfigurationServiceTests
         });
         harness.Svcl.EnqueueSavedFormat(Format(2, 16, 44100, 0));
 
-        var result = await harness.CreateService().ApplyAsync(Endpoint("endpoint-1"), 2, 0, CancellationToken.None);
+        var result = await Apply(harness, Endpoint("endpoint-1"), 2, 0, CancellationToken.None);
 
         Assert.Equal(SwitchStatus.SystemError, result.Status);
         Assert.NotNull(result.Message);
@@ -122,14 +153,15 @@ public sealed class DeviceConfigurationServiceTests
     }
 
     [Fact]
-    public async Task Apply_returns_not_applicable_when_endpoint_has_no_selectable_options()
+    public async Task GetOptions_returns_not_applicable_when_endpoint_has_no_selectable_options()
     {
         var harness = Service();
         SeedOptions(harness, items: Array.Empty<ControlPanelFormatItem>(), speakers: Array.Empty<ControlPanelSpeakerConfigurationItem>());
 
-        var result = await harness.CreateService().ApplyAsync(Endpoint("endpoint-1"), 2, 0, CancellationToken.None);
+        var result = await harness.CreateService()
+            .GetOptionsAsync(Endpoint("endpoint-1"), CancellationToken.None);
 
-        Assert.Equal(SwitchStatus.NotApplicable, result.Status);
+        Assert.IsType<EndpointOptionsResult.NotApplicable>(result);
     }
 
     [Fact]
@@ -149,7 +181,7 @@ public sealed class DeviceConfigurationServiceTests
         var source = new CancellationTokenSource();
         harness.Svcl.AfterSetSpeakers = () => source.Cancel();
 
-        var result = await harness.CreateService().ApplyAsync(Endpoint("endpoint-1"), 2, 0, source.Token);
+        var result = await Apply(harness, Endpoint("endpoint-1"), 2, 0, source.Token);
 
         Assert.Equal(SwitchStatus.Cancelled, result.Status);
         Assert.True(result.RollbackVerified);
@@ -172,11 +204,29 @@ public sealed class DeviceConfigurationServiceTests
             .EnqueueSavedFormat(Format(2, 16, 44100, 0x33)) // mismatch after apply
             .EnqueueSavedFormat(Format(2, 16, 44100, 0x33)); // mismatch after rollback
 
-        var result = await harness.CreateService().ApplyAsync(Endpoint("endpoint-1"), 2, 0, CancellationToken.None);
+        var result = await Apply(harness, Endpoint("endpoint-1"), 2, 0, CancellationToken.None);
 
         Assert.Equal(SwitchStatus.SystemError, result.Status);
         Assert.False(result.RollbackVerified);
         Assert.Contains("may not have been completely restored", result.Message!);
+    }
+
+    private static async Task<SwitchResult> Apply(
+        ServiceHarness harness,
+        EndpointInfo endpoint,
+        int channels,
+        int formatIndex,
+        CancellationToken cancellationToken)
+    {
+        var service = harness.CreateService();
+        var result = await service.GetOptionsAsync(endpoint, cancellationToken);
+        var available = Assert.IsType<EndpointOptionsResult.Available>(result);
+        return await service.ApplyAsync(
+            endpoint,
+            available.Options,
+            channels,
+            formatIndex,
+            cancellationToken);
     }
 
     private static ServiceHarness Service()

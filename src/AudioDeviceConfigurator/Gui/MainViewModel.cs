@@ -1,4 +1,6 @@
 using System.Collections.ObjectModel;
+using System.ComponentModel;
+using System.Runtime.CompilerServices;
 using AudioDeviceConfigurator.Abstractions;
 using AudioDeviceConfigurator.Application;
 using AudioDeviceConfigurator.Audio;
@@ -9,7 +11,7 @@ namespace AudioDeviceConfigurator.Gui;
 /// Pure logic for the WPF main window. Tested without spinning up WPF so the binding
 /// contracts, locking rules, and status transitions stay covered.
 /// </summary>
-public sealed class MainViewModel
+public sealed class MainViewModel : INotifyPropertyChanged
 {
     private readonly DeviceConfigurationService _service;
     private readonly IAudioPlaybackService _playback;
@@ -31,7 +33,10 @@ public sealed class MainViewModel
         _resolveWaveSource = resolveWaveSource;
         _dispatch = dispatcher ?? (action => action());
         _playback.PlaybackFailed += OnPlaybackFailed;
+        _playback.PropertyChanged += (_, _) => RefreshPlaybackState();
     }
+
+    public event PropertyChangedEventHandler? PropertyChanged;
 
     public ObservableCollection<EndpointInfo> Endpoints { get; } = new();
 
@@ -49,9 +54,25 @@ public sealed class MainViewModel
 
     public int? SelectedFormatIndex { get; private set; }
 
-    public string StatusMessage { get; private set; } = "Loading endpoints...";
+    public string StatusMessage
+    {
+        get => _statusMessage;
+        private set => Set(ref _statusMessage, value);
+    }
 
-    public bool IsBusy { get; private set; }
+    public bool IsBusy
+    {
+        get => _isBusy;
+        private set
+        {
+            if (Set(ref _isBusy, value))
+            {
+                OnPropertyChanged(nameof(CanApply));
+                OnPropertyChanged(nameof(CanPlay));
+                OnPropertyChanged(nameof(CanStop));
+            }
+        }
+    }
 
     public bool CanApply => SelectedEndpoint is not null
         && SelectedChannelIndex is not null
@@ -66,11 +87,26 @@ public sealed class MainViewModel
 
     public bool CanStop => _playback.IsPlaying;
 
-    private bool HasVerifiedSwitch { get; set; }
+    private bool HasVerifiedSwitch
+    {
+        get => _hasVerifiedSwitch;
+        set
+        {
+            if (Set(ref _hasVerifiedSwitch, value))
+            {
+                OnPropertyChanged(nameof(CanApply));
+                OnPropertyChanged(nameof(CanPlay));
+            }
+        }
+    }
+
+    private bool _hasVerifiedSwitch;
+    private string _statusMessage = "Loading endpoints...";
+    private bool _isBusy;
 
     public async Task LoadEndpointsAsync(CancellationToken cancellationToken)
     {
-        var endpoints = await _service.ListEndpointsAsync(cancellationToken).ConfigureAwait(false);
+        var endpoints = await _service.ListEndpointsAsync(cancellationToken);
         _dispatch(() =>
         {
             Endpoints.Clear();
@@ -87,13 +123,17 @@ public sealed class MainViewModel
     public async Task EndpointChangedAsync(EndpointInfo endpoint, CancellationToken cancellationToken)
     {
         SelectedEndpoint = endpoint;
+        OnPropertyChanged(nameof(SelectedEndpoint));
+        OnPropertyChanged(nameof(CanApply));
         SelectedEndpointOptions = null;
         SelectedChannelIndex = null;
         SelectedFormatIndex = null;
+        OnPropertyChanged(nameof(SelectedChannelIndex));
+        OnPropertyChanged(nameof(SelectedFormatIndex));
         SetBusy(true);
         try
         {
-            var result = await _service.GetOptionsAsync(endpoint, cancellationToken).ConfigureAwait(false);
+            var result = await _service.GetOptionsAsync(endpoint, cancellationToken);
             _dispatch(() => PopulateOptions(result));
         }
         finally
@@ -102,9 +142,27 @@ public sealed class MainViewModel
         }
     }
 
-    public void SelectChannelIndex(int index) => SelectedChannelIndex = Channels.Count > index ? index : null;
+    public void SelectChannelIndex(int index)
+    {
+        if (SelectedChannelIndex == index)
+        {
+            return;
+        }
+        SelectedChannelIndex = Channels.Count > index ? index : null;
+        OnPropertyChanged(nameof(SelectedChannelIndex));
+        OnPropertyChanged(nameof(CanApply));
+    }
 
-    public void SelectFormatIndex(int index) => SelectedFormatIndex = Formats.Count > index ? index : null;
+    public void SelectFormatIndex(int index)
+    {
+        if (SelectedFormatIndex == index)
+        {
+            return;
+        }
+        SelectedFormatIndex = Formats.Count > index ? index : null;
+        OnPropertyChanged(nameof(SelectedFormatIndex));
+        OnPropertyChanged(nameof(CanApply));
+    }
 
     public async Task<SwitchResult> ApplyAsync(CancellationToken cancellationToken)
     {
@@ -114,8 +172,10 @@ public sealed class MainViewModel
             return new SwitchResult(SwitchStatus.SystemError, "Select endpoint, channel, and format first.", true);
         }
 
-        var channels = SelectedEndpointOptions.Channels;
-        var formats = SelectedEndpointOptions.Formats;
+        var endpoint = SelectedEndpoint;
+        var options = SelectedEndpointOptions;
+        var channels = options.Channels;
+        var formats = options.Formats;
         var channel = channels[SelectedChannelIndex.Value];
         var formatIndex = SelectedFormatIndex.Value;
 
@@ -129,8 +189,12 @@ public sealed class MainViewModel
         SwitchResult result;
         try
         {
-            result = await _service.ApplyAsync(SelectedEndpoint, channel, formatIndex, linked.Token)
-                .ConfigureAwait(false);
+            result = await _service.ApplyAsync(
+                endpoint,
+                options,
+                channel,
+                formatIndex,
+                linked.Token);
         }
         finally
         {
@@ -139,12 +203,12 @@ public sealed class MainViewModel
 
         _dispatch(() => ApplyStatusMessage(result));
 
-        if (result.Status == SwitchStatus.Pass && _resolveWaveSource is not null && SelectedEndpoint is not null)
+        if (result.Status == SwitchStatus.Pass && _resolveWaveSource is not null)
         {
             try
             {
-                var source = _resolveWaveSource(SelectedEndpoint);
-                _playback.Start(SelectedEndpoint, source);
+                var source = _resolveWaveSource(endpoint);
+                _playback.Start(endpoint, source);
                 _dispatch(() =>
                 {
                     HasVerifiedSwitch = true;
@@ -162,6 +226,25 @@ public sealed class MainViewModel
         }
 
         return result;
+    }
+
+    public void Play()
+    {
+        if (!CanPlay || SelectedEndpoint is null || _resolveWaveSource is null)
+        {
+            return;
+        }
+
+        try
+        {
+            var source = _resolveWaveSource(SelectedEndpoint);
+            _playback.Start(SelectedEndpoint, source);
+            StatusMessage = "Playing test audio.";
+        }
+        catch (Exception ex)
+        {
+            StatusMessage = $"Playback failed: {ex.Message}";
+        }
     }
 
     public void StopPlayback()
@@ -193,6 +276,9 @@ public sealed class MainViewModel
         SelectedChannelIndex = null;
         SelectedFormatIndex = null;
         HasVerifiedSwitch = false;
+        OnPropertyChanged(nameof(SelectedEndpointOptions));
+        OnPropertyChanged(nameof(SelectedChannelIndex));
+        OnPropertyChanged(nameof(SelectedFormatIndex));
 
         switch (result)
         {
@@ -241,8 +327,26 @@ public sealed class MainViewModel
         }
     }
 
-    private void SetBusy(bool value)
+    private void SetBusy(bool value) => IsBusy = value;
+
+    private void RefreshPlaybackState()
     {
-        _dispatch(() => IsBusy = value);
+        OnPropertyChanged(nameof(CanApply));
+        OnPropertyChanged(nameof(CanPlay));
+        OnPropertyChanged(nameof(CanStop));
+    }
+
+    private void OnPropertyChanged([CallerMemberName] string? propertyName = null) =>
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propertyName));
+
+    private bool Set<T>(ref T field, T value, [CallerMemberName] string? propertyName = null)
+    {
+        if (EqualityComparer<T>.Default.Equals(field, value))
+        {
+            return false;
+        }
+        field = value;
+        OnPropertyChanged(propertyName);
+        return true;
     }
 }

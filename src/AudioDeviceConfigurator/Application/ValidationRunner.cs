@@ -102,14 +102,18 @@ public sealed class ValidationRunner(AppEnvironment env, CancellationToken cance
 
         var service = new DeviceConfigurationService(env.Endpoints, env.ControlPanelFormats, env.Svcl);
         var catalog = service.GetOptionsAsync(endpoint, cancellationToken).GetAwaiter().GetResult();
+        _controlPanelFormats = catalog switch
+        {
+            EndpointOptionsResult.Available available => available.Source,
+            EndpointOptionsResult.NotApplicable notApplicable => notApplicable.Source,
+            _ => null,
+        };
         if (catalog is EndpointOptionsResult.NotApplicable)
         {
             return ExitCode.NotApplicable;
         }
 
         var options_available = ((EndpointOptionsResult.Available)catalog).Options;
-        _controlPanelFormats = env.ControlPanelFormats.ReadDefaultFormats(
-            endpoint, TimeSpan.FromSeconds(30));
 
         var channels = options_available.Channels;
         var formats = options_available.Formats;
@@ -131,7 +135,12 @@ public sealed class ValidationRunner(AppEnvironment env, CancellationToken cance
         }
 
         var formatIndex = options_available.IndexOfFormat(selectedFormat);
-        var outcome = service.ApplyAsync(endpoint, selectedChannels, formatIndex, cancellationToken).GetAwaiter().GetResult();
+        var outcome = service.ApplyAsync(
+            endpoint,
+            options_available,
+            selectedChannels,
+            formatIndex,
+            cancellationToken).GetAwaiter().GetResult();
         switch (outcome.Status)
         {
             case SwitchStatus.Pass:
