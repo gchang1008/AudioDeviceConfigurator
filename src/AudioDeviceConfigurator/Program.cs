@@ -100,10 +100,12 @@ public static class Program
             service,
             playback,
             resolveWaveSource: _ => WaveSource.Parse(File.ReadAllBytes(Path.Combine(appDirectory, "test_audio.wav"))));
+        var window = new MainWindow(viewModel);
         var app = new App();
         app.InitializeComponent();
-        var window = new MainWindow(viewModel);
         app.MainWindow = window;
-        return app.Run(window);
+        window.Show();
+        window.Activate();
+        return app.Run();
     }
 }
