@@ -44,9 +44,10 @@ public partial class MainWindow : Window
             return;
         }
 
+        var previous = endpoint;
         try
         {
-            await _viewModel.EndpointChangedAsync(endpoint, CancellationToken.None);
+            await _viewModel.EndpointChangedAsync(previous, CancellationToken.None);
             StatusText.Text = _viewModel.StatusMessage;
         }
         catch (Exception ex)
