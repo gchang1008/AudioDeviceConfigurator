@@ -19,12 +19,18 @@ public sealed class FakeControlPanelFormatProvider : IControlPanelFormatProvider
     public List<string> EndpointIds { get; } = [];
     public EndpointInfo? LastEndpoint { get; private set; }
     public TimeSpan? Timeout { get; private set; }
+    public Func<EndpointInfo, TimeSpan, ControlPanelFormatResult>? Provider { get; set; }
 
     public ControlPanelFormatResult ReadDefaultFormats(EndpointInfo endpoint, TimeSpan timeout)
     {
         EndpointIds.Add(endpoint.EndpointId);
         LastEndpoint = endpoint;
         Timeout = timeout;
+        if (Provider is not null)
+        {
+            return Provider(endpoint, timeout);
+        }
+
         var maxSupportedChannels = SpeakerConfigurations.Count == 0
             ? (int?)null
             : SpeakerConfigurations.Max(item => item.Channels);
