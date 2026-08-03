@@ -77,6 +77,20 @@ public sealed class DeviceConfigurationService
     public Task<IReadOnlyList<EndpointInfo>> ListEndpointsAsync(CancellationToken cancellationToken) =>
         Task.FromResult(_endpoints.GetActiveRenderEndpoints());
 
+    /// <summary>Reads the device's current channel/sample rate/bit depth via SVCL, without altering it.</summary>
+    public SavedFormat? ReadCurrentFormat(string endpointId)
+    {
+        try
+        {
+            var format = _svcl.SaveDeviceFormat(endpointId);
+            return format.ChannelMask == 0 ? null : format;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
     /// <summary>Reads the Control Panel catalog for the endpoint and exposes selectable channels and formats.</summary>
     public async Task<EndpointOptionsResult> GetOptionsAsync(
         EndpointInfo endpoint,

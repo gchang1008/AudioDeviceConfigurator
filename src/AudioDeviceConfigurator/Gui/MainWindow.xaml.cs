@@ -25,6 +25,12 @@ public partial class MainWindow : Window
         try
         {
             await _viewModel.LoadEndpointsAsync(CancellationToken.None);
+            var defaultEndpoint = _viewModel.Endpoints.FirstOrDefault(item => item.IsDefault)
+                ?? _viewModel.Endpoints.FirstOrDefault();
+            if (defaultEndpoint is not null)
+            {
+                EndpointCombo.SelectedItem = defaultEndpoint;
+            }
         }
         catch (Exception ex)
         {
@@ -42,6 +48,7 @@ public partial class MainWindow : Window
         try
         {
             await _viewModel.EndpointChangedAsync(endpoint, CancellationToken.None);
+            await _viewModel.LoadActiveSettingsAsync(endpoint, CancellationToken.None);
         }
         catch (Exception ex)
         {

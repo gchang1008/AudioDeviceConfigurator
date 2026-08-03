@@ -1,6 +1,7 @@
 using System.ComponentModel;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Media;
 using AudioDeviceConfigurator.Abstractions;
 using AudioDeviceConfigurator.Application;
 using AudioDeviceConfigurator.Audio;
@@ -48,6 +49,162 @@ public sealed class MainWindowIntegrationTests : IDisposable
     }
 
     [Fact]
+    public async Task Active_settings_display_updated_after_apply()
+    {
+        _harness.SeedEndpoint("ep-1", isDefault: true);
+        _harness.SeedOptions("ep-1", channels: new[] { 2 }, formats: new[]
+        {
+            new ControlPanelFormatItem(0, "16 bit, 44100 Hz", 2, 44100, 16, 16, ControlPanelParseStatus.Parsed, null),
+        });
+        // LoadActiveSettingsAsync consumes one (initial device format).
+        // ApplyAsync consumes before + after = 2 more. Total = 3.
+        _harness.Svcl
+            .EnqueueSavedFormat(new SavedFormat(SavedFormat.WaveFormatExtensible, 2, 44100, 32, 16, 0x3, new byte[40]))
+            .EnqueueSavedFormat(new SavedFormat(SavedFormat.WaveFormatExtensible, 2, 44100, 32, 16, 0x3, new byte[40]))
+            .EnqueueSavedFormat(new SavedFormat(SavedFormat.WaveFormatExtensible, 2, 44100, 32, 16, 0x3, new byte[40]));
+
+        await _harness.WaitForEndpointsAsync(TimeSpan.FromSeconds(5));
+        await _harness.WaitForChannelsAsync(TimeSpan.FromSeconds(5));
+
+        // Before Apply: Active region already reflects the device's current format
+        // (loaded by LoadActiveSettingsAsync right after EndpointChangedAsync).
+        _harness.Invoke(() =>
+        {
+            var channelText = (TextBlock?)FindByAutomationId("ActiveChannelText");
+            Assert.NotNull(channelText);
+            Assert.Equal("Channel: 2 ch", channelText!.Text);
+            Assert.Equal("Sample Rate: 44,100 Hz",
+                ((TextBlock?)FindByAutomationId("ActiveSampleRateText"))!.Text);
+            Assert.Equal("Bit Depth: 16-bit",
+                ((TextBlock?)FindByAutomationId("ActiveBitDepthText"))!.Text);
+        });
+
+        _harness.Invoke(() =>
+        {
+            _harness.SelectConfiguration(2, 44100, 16);
+            _harness.ApplyButton.RaiseEvent(new RoutedEventArgs(System.Windows.Controls.Primitives.ButtonBase.ClickEvent));
+        });
+        await _harness.WaitForPlaybackStartedAsync(TimeSpan.FromSeconds(5));
+
+        _harness.Invoke(() =>
+        {
+            var channelText = (TextBlock?)FindByAutomationId("ActiveChannelText");
+            Assert.NotNull(channelText);
+            Assert.Equal("Channel: 2 ch", channelText!.Text);
+        });
+    }
+
+    private DependencyObject? FindByAutomationId(string id)
+    {
+        var window = _harness.Window!;
+        for (int i = 0; i < VisualTreeHelper.GetChildrenCount(window); i++)
+        {
+            var child = VisualTreeHelper.GetChild(window, i);
+            if (Matches(child, id)) return child;
+            var found = SearchTree(child, id);
+            if (found is not null) return found;
+        }
+        return null;
+    }
+
+    private DependencyObject? SearchTree(DependencyObject parent, string id)
+    {
+        for (int i = 0; i < VisualTreeHelper.GetChildrenCount(parent); i++)
+        {
+            var child = VisualTreeHelper.GetChild(parent, i);
+            if (Matches(child, id)) return child;
+            var found = SearchTree(child, id);
+            if (found is not null) return found;
+        }
+        return null;
+    }
+
+    private static bool Matches(DependencyObject obj, string id) =>
+        System.Windows.Automation.AutomationProperties.GetAutomationId(obj) == id;
+
+    [Fact]
+    public async Task Changing_radio_button_during_playback_keeps_apply_enabled_and_reapply_works()
+    {
+        _harness.SeedEndpoint("ep-1", isDefault: true);
+        _harness.SeedOptions("ep-1", channels: new[] { 2, 4 }, formats: new[]
+        {
+            new ControlPanelFormatItem(0, "16 bit, 44100 Hz", 2, 44100, 16, 16, ControlPanelParseStatus.Parsed, null),
+            new ControlPanelFormatItem(1, "16 bit, 48000 Hz", 2, 48000, 16, 16, ControlPanelParseStatus.Parsed, null),
+        });
+// LoadActive consumes 1, then each of 2 Apply calls consumes before+after = 2 each.
+        // Total: 1 + 2 + 2 = 5.
+        _harness.Svcl
+            .EnqueueSavedFormat(new SavedFormat(SavedFormat.WaveFormatExtensible, 2, 44100, 32, 16, 0x3, new byte[40]))
+            .EnqueueSavedFormat(new SavedFormat(SavedFormat.WaveFormatExtensible, 2, 44100, 32, 16, 0x3, new byte[40]))
+            .EnqueueSavedFormat(new SavedFormat(SavedFormat.WaveFormatExtensible, 2, 44100, 32, 16, 0x3, new byte[40]))
+            .EnqueueSavedFormat(new SavedFormat(SavedFormat.WaveFormatExtensible, 2, 48000, 32, 16, 0x3, new byte[40]))
+            .EnqueueSavedFormat(new SavedFormat(SavedFormat.WaveFormatExtensible, 2, 48000, 32, 16, 0x3, new byte[40]));
+
+        await _harness.WaitForEndpointsAsync(TimeSpan.FromSeconds(5));
+        _harness.Invoke(() => _harness.EndpointCombo.SelectedIndex = 0);
+        await _harness.WaitForChannelsAsync(TimeSpan.FromSeconds(5));
+        _harness.Invoke(() =>
+        {
+            _harness.SelectConfiguration(2, 44100, 16);
+            _harness.ApplyButton.RaiseEvent(new RoutedEventArgs(System.Windows.Controls.Primitives.ButtonBase.ClickEvent));
+        });
+        await _harness.WaitForPlaybackStartedAsync(TimeSpan.FromSeconds(5));
+
+        // User picks a different sample rate while playback is running.
+        _harness.Invoke(() => _harness.SelectConfiguration(2, 48000, 16));
+
+        _harness.Invoke(() =>
+        {
+            Assert.True(_harness.ApplyButton.IsEnabled);
+            _harness.ApplyButton.RaiseEvent(new RoutedEventArgs(System.Windows.Controls.Primitives.ButtonBase.ClickEvent));
+        });
+        await _harness.WaitForPlaybackStoppedAsync(TimeSpan.FromSeconds(5));
+        await _harness.WaitForPlaybackStartedAsync(TimeSpan.FromSeconds(5));
+        _harness.Invoke(() =>
+        {
+            Assert.True(_harness.Playback.IsPlaying);
+            Assert.Contains("SetFormat:ep-1:2:16:48000", _harness.Svcl.Operations);
+        });
+    }
+
+    [Fact]
+    public async Task Window_loads_default_endpoint_on_startup()
+    {
+        _harness.SeedEndpoint("ep-other", isDefault: false);
+        _harness.SeedEndpoint("ep-default", isDefault: true);
+        _harness.SeedOptions("ep-default", channels: new[] { 2 }, formats: new[]
+        {
+            new ControlPanelFormatItem(0, "16 bit, 44100 Hz", 2, 44100, 16, 16, ControlPanelParseStatus.Parsed, null),
+        });
+
+        await _harness.WaitForEndpointsAsync(TimeSpan.FromSeconds(5));
+        await _harness.WaitForChannelsAsync(TimeSpan.FromSeconds(5));
+
+        _harness.Invoke(() =>
+        {
+            Assert.Equal("ep-default", EndpointCombo_SelectedEndpointId());
+        });
+    }
+
+    [Fact]
+    public async Task Switch_options_are_populated_before_endpoint_is_selected()
+    {
+        // The VM seeds common switch options in its constructor so the three columns are
+        // visible immediately when the window opens.
+        var vm = _harness.ViewModel;
+        Assert.Equal(4, vm.ChannelOptions.Count);
+        Assert.Equal(7, vm.SampleRateOptions.Count);
+        Assert.Equal(4, vm.BitDepthOptions.Count);
+        await Task.CompletedTask;
+    }
+
+    private string? EndpointCombo_SelectedEndpointId()
+    {
+        var selected = _harness.EndpointCombo.SelectedItem as EndpointInfo;
+        return selected?.EndpointId;
+    }
+
+    [Fact]
     public async Task Status_binding_remains_active_after_window_loads_endpoints()
     {
         _harness.SeedEndpoint("ep-1", isDefault: true);
@@ -59,7 +216,9 @@ public sealed class MainWindowIntegrationTests : IDisposable
             var expression = System.Windows.Data.BindingOperations.GetBindingExpression(
                 _harness.StatusText, TextBlock.TextProperty);
             Assert.NotNull(expression);
-            Assert.Equal("Select an endpoint to load its options.", _harness.StatusText.Text);
+            // Default endpoint is auto-selected on startup; with no SeedOptions the VM reports
+            // the endpoint has no selectable options.
+            Assert.Equal("Endpoint has no selectable options.", _harness.StatusText.Text);
         });
     }
 
@@ -220,6 +379,7 @@ public sealed class MainWindowIntegrationTests : IDisposable
         });
         _harness.Svcl
             .EnqueueSavedFormat(new SavedFormat(SavedFormat.WaveFormatExtensible, 2, 44100, 32, 16, 0x3, new byte[40]))
+            .EnqueueSavedFormat(new SavedFormat(SavedFormat.WaveFormatExtensible, 2, 44100, 32, 16, 0x3, new byte[40]))
             .EnqueueSavedFormat(new SavedFormat(SavedFormat.WaveFormatExtensible, 2, 44100, 32, 16, 0x3, new byte[40]));
 
         await _harness.WaitForEndpointsAsync(TimeSpan.FromSeconds(5));
@@ -235,7 +395,9 @@ public sealed class MainWindowIntegrationTests : IDisposable
         _harness.Invoke(() =>
         {
             Assert.True(_harness.Playback.IsPlaying);
-            Assert.False(_harness.ApplyButton.IsEnabled);
+            // Apply stays enabled so the user can pick a new channel/sample rate/bit depth
+            // and re-apply; ApplyAsync stops the current stream before swapping settings.
+            Assert.True(_harness.ApplyButton.IsEnabled);
             Assert.False(_harness.PlayButton.IsEnabled);
             Assert.True(_harness.StopButton.IsEnabled);
         });
@@ -250,6 +412,7 @@ public sealed class MainWindowIntegrationTests : IDisposable
             new ControlPanelFormatItem(0, "16 bit, 44100 Hz", 2, 44100, 16, 16, ControlPanelParseStatus.Parsed, null),
         });
         _harness.Svcl
+            .EnqueueSavedFormat(new SavedFormat(SavedFormat.WaveFormatExtensible, 2, 44100, 32, 16, 0x3, new byte[40]))
             .EnqueueSavedFormat(new SavedFormat(SavedFormat.WaveFormatExtensible, 2, 44100, 32, 16, 0x3, new byte[40]))
             .EnqueueSavedFormat(new SavedFormat(SavedFormat.WaveFormatExtensible, 2, 44100, 32, 16, 0x3, new byte[40]));
 

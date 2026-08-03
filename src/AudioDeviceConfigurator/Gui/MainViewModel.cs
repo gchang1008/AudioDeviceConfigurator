@@ -23,8 +23,10 @@ public sealed class MainViewModel : INotifyPropertyChanged
 
     private static readonly int[] CommonChannels = [2, 4, 6, 8];
     private static readonly int[] CommonSampleRates =
-        [8000, 11025, 16000, 22050, 32000, 44100, 48000, 88200, 96000, 176400, 192000, 352800, 384000];
+        [32000, 44100, 48000, 88200, 96000, 176400, 192000];
     private static readonly int[] CommonBitDepths = [16, 20, 24, 32];
+    private const int MinSampleRate = 32000;
+    private const int MaxSampleRate = 192000;
 
     public MainViewModel(
         DeviceConfigurationService service,
@@ -40,6 +42,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
         _dispatch = dispatcher ?? (action => action());
         _playback.PlaybackFailed += OnPlaybackFailed;
         _playback.PropertyChanged += (_, _) => RefreshPlaybackState();
+        SeedCommonSwitchOptions();
     }
 
     public event PropertyChangedEventHandler? PropertyChanged;
@@ -72,6 +75,28 @@ public sealed class MainViewModel : INotifyPropertyChanged
 
     public int? SelectedBitDepth { get; private set; }
 
+    public int? ActiveChannel
+    {
+        get => _activeChannel;
+        private set => _activeChannel = value;
+    }
+
+    public int? ActiveSampleRate
+    {
+        get => _activeSampleRate;
+        private set => _activeSampleRate = value;
+    }
+
+    public int? ActiveBitDepth
+    {
+        get => _activeBitDepth;
+        private set => _activeBitDepth = value;
+    }
+
+    public string ActiveChannelDisplay => ActiveChannel is int ch ? $"Channel: {ch} ch" : "Channel: —";
+    public string ActiveSampleRateDisplay => ActiveSampleRate is int rate ? $"Sample Rate: {rate:N0} Hz" : "Sample Rate: —";
+    public string ActiveBitDepthDisplay => ActiveBitDepth is int bits ? $"Bit Depth: {bits}-bit" : "Bit Depth: —";
+
     public string StatusMessage
     {
         get => _statusMessage;
@@ -99,8 +124,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
         && SelectedSampleRate is not null
         && SelectedBitDepth is not null
         && _formatPairs.Contains((SelectedSampleRate.Value, SelectedBitDepth.Value))
-        && !IsBusy
-        && !_playback.IsPlaying;
+        && !IsBusy;
 
     public bool CanPlay => SelectedEndpoint is not null
         && !IsBusy
@@ -125,6 +149,9 @@ public sealed class MainViewModel : INotifyPropertyChanged
     }
 
     private bool _hasVerifiedSwitch;
+    private int? _activeChannel;
+    private int? _activeSampleRate;
+    private int? _activeBitDepth;
     private string _statusMessage = "Loading endpoints...";
     private bool _isBusy;
 
@@ -144,6 +171,27 @@ public sealed class MainViewModel : INotifyPropertyChanged
         });
     }
 
+    public async Task LoadActiveSettingsAsync(EndpointInfo endpoint, CancellationToken cancellationToken)
+    {
+        var format = await Task.Run(
+            () => _service.ReadCurrentFormat(endpoint.EndpointId),
+            cancellationToken).ConfigureAwait(false);
+        _dispatch(() =>
+        {
+            if (format is null)
+            {
+                SetActiveSettings(null, null, null);
+            }
+            else
+            {
+                SetActiveSettings(
+                    format.Channels,
+                    format.SampleRate,
+                    format.EffectiveBits);
+            }
+        });
+    }
+
     public async Task EndpointChangedAsync(EndpointInfo endpoint, CancellationToken cancellationToken)
     {
         SelectedEndpoint = endpoint;
@@ -152,6 +200,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
         SelectedEndpointOptions = null;
         SelectedChannelIndex = null;
         SelectedFormatIndex = null;
+        SetActiveSettings(null, null, null);
         ClearSwitchSelection();
         OnPropertyChanged(nameof(SelectedChannelIndex));
         OnPropertyChanged(nameof(SelectedFormatIndex));
@@ -298,7 +347,11 @@ public sealed class MainViewModel : INotifyPropertyChanged
 
         if (result.Status == SwitchStatus.Pass)
         {
-            _dispatch(() => HasVerifiedSwitch = true);
+            _dispatch(() =>
+            {
+                SetActiveSettings(channel, SelectedSampleRate!.Value, SelectedBitDepth!.Value);
+                HasVerifiedSwitch = true;
+            });
         }
 
         if (result.Status == SwitchStatus.Pass && _resolveWaveSource is not null)
@@ -417,6 +470,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
         foreach (var value in CommonSampleRates
                      .Concat(_formatPairs.Select(pair => pair.SampleRate))
                      .Distinct()
+                     .Where(value => value >= MinSampleRate && value <= MaxSampleRate)
                      .OrderBy(value => value))
         {
             SampleRateOptions.Add(new NumericSwitchOption(value, $"{value:N0} Hz", $"SampleRateOption-{value}"));
@@ -428,6 +482,28 @@ public sealed class MainViewModel : INotifyPropertyChanged
         }
 
         RefreshFormatOptionState();
+    }
+
+    private void SeedCommonSwitchOptions()
+    {
+        ChannelOptions.Clear();
+        SampleRateOptions.Clear();
+        BitDepthOptions.Clear();
+
+        foreach (var value in CommonChannels)
+        {
+            ChannelOptions.Add(new NumericSwitchOption(value, $"{value} ch", $"ChannelOption-{value}"));
+        }
+
+        foreach (var value in CommonSampleRates)
+        {
+            SampleRateOptions.Add(new NumericSwitchOption(value, $"{value:N0} Hz", $"SampleRateOption-{value}"));
+        }
+
+        foreach (var value in CommonBitDepths)
+        {
+            BitDepthOptions.Add(new NumericSwitchOption(value, $"{value}-bit", $"BitDepthOption-{value}"));
+        }
     }
 
     private void RefreshFormatOptionState()
@@ -504,6 +580,25 @@ public sealed class MainViewModel : INotifyPropertyChanged
     }
 
     private void SetBusy(bool value) => IsBusy = value;
+
+    private void SetActiveSettings(int? channel, int? sampleRate, int? bitDepth)
+    {
+        if (Set(ref _activeChannel, channel))
+        {
+            OnPropertyChanged(nameof(ActiveChannel));
+            OnPropertyChanged(nameof(ActiveChannelDisplay));
+        }
+        if (Set(ref _activeSampleRate, sampleRate))
+        {
+            OnPropertyChanged(nameof(ActiveSampleRate));
+            OnPropertyChanged(nameof(ActiveSampleRateDisplay));
+        }
+        if (Set(ref _activeBitDepth, bitDepth))
+        {
+            OnPropertyChanged(nameof(ActiveBitDepth));
+            OnPropertyChanged(nameof(ActiveBitDepthDisplay));
+        }
+    }
 
     private void RefreshPlaybackState()
     {

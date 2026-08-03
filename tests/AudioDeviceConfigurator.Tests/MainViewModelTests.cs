@@ -28,9 +28,11 @@ public sealed class MainViewModelTests
         Assert.Equal(new[] { 2, 4, 6, 8 }, vm.ChannelOptions.Select(item => item.Value));
         Assert.True(vm.ChannelOptions.Single(item => item.Value == 2).IsEnabled);
         Assert.False(vm.ChannelOptions.Single(item => item.Value == 4).IsEnabled);
-        Assert.Contains(vm.SampleRateOptions, item => item.Value == 12345 && item.IsEnabled);
+        Assert.Contains(vm.SampleRateOptions, item => item.Value == 32000 && item.IsEnabled);
         Assert.True(vm.SampleRateOptions.Single(item => item.Value == 32000).IsEnabled);
         Assert.False(vm.SampleRateOptions.Single(item => item.Value == 44100).IsEnabled);
+        // Sample rates outside the 32k–192k band (e.g. 12345) are filtered out.
+        Assert.DoesNotContain(vm.SampleRateOptions, item => item.Value == 12345);
         Assert.Equal(new[] { 16, 20, 24, 32 }, vm.BitDepthOptions.Select(item => item.Value));
         Assert.False(vm.BitDepthOptions.Single(item => item.Value == 20).IsEnabled);
     }
@@ -58,6 +60,105 @@ public sealed class MainViewModelTests
         Assert.False(vm.BitDepthOptions.Single(item => item.Value == 24).IsEnabled);
         Assert.True(vm.BitDepthOptions.Single(item => item.Value == 16).IsEnabled);
         Assert.DoesNotContain(vm.BitDepthOptions, item => item.IsSelected);
+    }
+
+    [Fact]
+    public async Task LoadActiveSettingsAsync_seeds_active_values_from_service()
+    {
+        var vm = NewViewModel(out var harness);
+        SeedEndpoints(harness, "ep-1");
+        harness.Svcl.EnqueueSavedFormat(Format(2, 16, 44100, 0x3));
+
+        await vm.LoadActiveSettingsAsync(harness.Endpoints.Endpoints[0], CancellationToken.None);
+
+        Assert.Equal(2, vm.ActiveChannel);
+        Assert.Equal(44100, vm.ActiveSampleRate);
+        Assert.Equal(16, vm.ActiveBitDepth);
+    }
+
+    [Fact]
+    public async Task LoadActiveSettingsAsync_clears_when_service_returns_null()
+    {
+        var vm = NewViewModel(out var harness);
+        SeedEndpoints(harness, "ep-1");
+        // Enqueue a format with ChannelMask = 0 to simulate the "unavailable" case.
+        harness.Svcl.EnqueueSavedFormat(new SavedFormat(SavedFormat.WaveFormatExtensible, 2, 44100, 16, 16, 0, new byte[40]));
+
+        await vm.LoadActiveSettingsAsync(harness.Endpoints.Endpoints[0], CancellationToken.None);
+
+        Assert.Null(vm.ActiveChannel);
+        Assert.Null(vm.ActiveSampleRate);
+        Assert.Null(vm.ActiveBitDepth);
+    }
+
+    [Fact]
+    public async Task ApplyAsync_records_active_settings_and_clears_on_endpoint_change()
+    {
+        var vm = NewViewModel(out var harness);
+        SeedEndpoints(harness, "ep-1");
+        SeedOptions(harness, channels: new[] { 2 }, formats: new[]
+        {
+            new ControlPanelFormatItem(0, "16 bit, 44100 Hz", 2, 44100, 16, 16, ControlPanelParseStatus.Parsed, null),
+        });
+        harness.Svcl
+            .EnqueueSavedFormat(Format(2, 16, 44100, 0x3))
+            .EnqueueSavedFormat(Format(2, 16, 44100, 0x3));
+
+        await vm.LoadEndpointsAsync(CancellationToken.None);
+        await vm.EndpointChangedAsync(vm.Endpoints[0], CancellationToken.None);
+        Assert.Null(vm.ActiveChannel);
+
+        vm.SelectChannelIndex(0);
+        vm.SelectFormatIndex(0);
+        await vm.ApplyAsync(CancellationToken.None);
+
+        Assert.Equal(2, vm.ActiveChannel);
+        Assert.Equal(44100, vm.ActiveSampleRate);
+        Assert.Equal(16, vm.ActiveBitDepth);
+        Assert.Equal("Channel: 2 ch", vm.ActiveChannelDisplay);
+        Assert.Equal("Sample Rate: 44,100 Hz", vm.ActiveSampleRateDisplay);
+        Assert.Equal("Bit Depth: 16-bit", vm.ActiveBitDepthDisplay);
+
+        // Switching endpoint clears the active settings.
+        SeedEndpoints(harness, "ep-2");
+        await vm.EndpointChangedAsync(harness.Endpoints.Endpoints[^1], CancellationToken.None);
+        Assert.Null(vm.ActiveChannel);
+        Assert.Null(vm.ActiveSampleRate);
+        Assert.Null(vm.ActiveBitDepth);
+    }
+
+    [Fact]
+    public void Common_switch_options_are_seeded_before_endpoint_selected()
+    {
+        var vm = NewViewModel(out _);
+        Assert.Equal(new[] { 2, 4, 6, 8 }, vm.ChannelOptions.Select(item => item.Value));
+        Assert.False(vm.ChannelOptions.Any(item => item.IsEnabled));
+        Assert.Equal(new[] { 32000, 44100, 48000, 88200, 96000, 176400, 192000 },
+            vm.SampleRateOptions.Select(item => item.Value));
+        Assert.False(vm.SampleRateOptions.Any(item => item.IsEnabled));
+        Assert.Equal(new[] { 16, 20, 24, 32 }, vm.BitDepthOptions.Select(item => item.Value));
+        Assert.False(vm.BitDepthOptions.Any(item => item.IsEnabled));
+    }
+
+    [Fact]
+    public async Task SampleRateOptions_filters_endpoint_formats_outside_32k_to_192k_band()
+    {
+        var vm = NewViewModel(out var harness);
+        SeedEndpoints(harness, "ep-1");
+        SeedOptions(harness, channels: new[] { 2 }, formats: new[]
+        {
+            new ControlPanelFormatItem(0, "low", null, 8000, 16, 16, ControlPanelParseStatus.Parsed, null),
+            new ControlPanelFormatItem(1, "in band", null, 96000, 16, 16, ControlPanelParseStatus.Parsed, null),
+            new ControlPanelFormatItem(2, "above", null, 384000, 16, 16, ControlPanelParseStatus.Parsed, null),
+        });
+
+        await vm.LoadEndpointsAsync(CancellationToken.None);
+        await vm.EndpointChangedAsync(vm.Endpoints[0], CancellationToken.None);
+
+        Assert.Contains(vm.SampleRateOptions, item => item.Value == 96000);
+        Assert.DoesNotContain(vm.SampleRateOptions, item => item.Value == 8000);
+        Assert.DoesNotContain(vm.SampleRateOptions, item => item.Value == 384000);
+        Assert.DoesNotContain(vm.SampleRateOptions, item => item.Value == 352800);
     }
 
     [Fact]
@@ -226,7 +327,7 @@ public sealed class MainViewModelTests
         Assert.Equal(SwitchStatus.Pass, result.Status);
         Assert.True(harness.Playback.IsPlaying);
         Assert.Equal("ep-1", harness.Playback.LastEndpoint);
-        Assert.False(vm.CanApply); // apply locked during playback
+        Assert.True(vm.CanApply); // apply is available while playing; ApplyAsync stops playback first
         Assert.True(vm.CanStop);
         Assert.False(vm.CanPlay);
         Assert.Single(harness.ControlPanel.EndpointIds);

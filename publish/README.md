@@ -23,11 +23,16 @@ Double-clicking `AudioDeviceConfigurator.exe` (or running it with no arguments) 
 
 ## GUI workflow
 
-The window lists every active render endpoint discovered through Core Audio. Selecting an endpoint reloads its speaker-channel and Default Format items from the legacy Sound Control Panel. Speaker Channels, Sample Rate, and Bit Depth are shown as switch groups; common values remain visible while unsupported values are disabled. Sample Rate and Bit Depth constrain each other using the exact pairs exposed by Control Panel, while the speaker-channel catalog remains independent. After Apply verifies a successful switch through `svcl.exe`, the GUI immediately loops `test_audio.wav` through the selected endpoint in WASAPI Shared Mode so you can hear whether the new format is in effect.
+The window opens with the current Windows default playback endpoint already selected. Speaker Channels, Sample Rate, and Bit Depth are visible from the start, before the endpoint's Control Panel data has loaded.
 
-- **Apply** is locked while a switch or playback is in progress.
-- **Play** is enabled only after a verified switch, and only when nothing is currently playing.
-- **Stop** releases the WASAPI stream; **Apply** auto-stops any active stream first.
+- **Three columns** — Speaker Channels, Sample Rate, and Bit Depth — sit side by side as switch groups. Common values stay visible, unsupported values are disabled.
+- **Sample Rate** lists only the standard values between 32 kHz and 192 kHz (32, 44.1, 48, 88.2, 96, 176.4, 192 kHz).
+- **Channel**, **Sample Rate**, and **Bit Depth** constrain each other using the exact pairs exposed by the Control Panel, so picking a sample rate clears the bit depth if that pair does not exist (and vice versa).
+- The **Active** panel in the lower-right shows the device's current channel / sample rate / bit depth. It is populated as soon as an endpoint is selected, and refreshed after every successful **Apply** (or re-**Apply**).
+- **Apply** is locked while a switch is in progress, but stays enabled while audio is playing. Pressing **Apply** while playback is active first stops the WASAPI stream, then applies the new format. The new format starts playing automatically on success.
+- **Play** is enabled only after a verified switch, and only when nothing is currently playing. Changing the radio-button selection while playing keeps **Apply** enabled, so the new selection can be re-applied without manually pressing **Stop** first.
+- **Stop** releases the WASAPI stream.
+- After **Apply** verifies a successful switch through `svcl.exe`, the GUI immediately loops `test_audio.wav` through the selected endpoint in WASAPI Shared Mode so you can hear whether the new format is in effect.
 - Closing the window always stops playback and releases the WASAPI resources.
 - Playback errors are surfaced in the status line and **never** roll back a verified audio configuration.
 - The legacy Sound, Properties, and Speaker Setup windows opened during enumeration are closed automatically.
