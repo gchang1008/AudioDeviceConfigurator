@@ -17,7 +17,7 @@
 dotnet run --project tools/AudioDeviceConfigurator.Acceptance -c Release -- inspect
 ```
 
-`inspect` 只啟動 GUI、列出每個 Endpoint 的 ID、聲道與格式，再關閉 GUI；不按 Apply，也不執行 SVCL setter。
+`inspect` 只啟動 GUI、列出每個 Endpoint 的聲道、取樣率與位元深度 Switch（包含 disabled 選項），再關閉 GUI；不按 Apply，也不執行 SVCL setter。
 
 ## 完整驗收
 
@@ -25,7 +25,8 @@ dotnet run --project tools/AudioDeviceConfigurator.Acceptance -c Release -- insp
 dotnet run --project tools/AudioDeviceConfigurator.Acceptance -c Release -- run `
   --endpoint-id '{0.0.0.00000000}.{...}' `
   --channels 2 `
-  --format-text '24 位元，48000 Hz (錄音室品質)'
+  --sample-rate 48000 `
+  --bit-depth 24
 ```
 
 工具會先顯示 Endpoint、選定值及原始 SVCL readback。只有在 console 精確輸入 `APPLY` 後才會按 GUI 的 Apply；EOF 或其他輸入會回 `CANCELLED`，且不修改設定。

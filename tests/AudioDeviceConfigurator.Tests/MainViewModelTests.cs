@@ -11,6 +11,83 @@ namespace AudioDeviceConfigurator.Tests;
 public sealed class MainViewModelTests
 {
     [Fact]
+    public async Task EndpointChangedAsync_builds_fixed_switch_options_and_disables_unsupported_values()
+    {
+        var vm = NewViewModel(out var harness);
+        SeedEndpoints(harness, "ep-1");
+        SeedOptions(harness, channels: new[] { 2 }, formats: new[]
+        {
+            new ControlPanelFormatItem(7, "16 bit, 32000 Hz", null, 32000, 16, 16, ControlPanelParseStatus.Parsed, null),
+            new ControlPanelFormatItem(12, "24 bit, 48000 Hz", null, 48000, 24, 32, ControlPanelParseStatus.Parsed, null),
+            new ControlPanelFormatItem(19, "16 bit, 12345 Hz", null, 12345, 16, 16, ControlPanelParseStatus.Parsed, null),
+        });
+
+        await vm.LoadEndpointsAsync(CancellationToken.None);
+        await vm.EndpointChangedAsync(vm.Endpoints[0], CancellationToken.None);
+
+        Assert.Equal(new[] { 2, 4, 6, 8 }, vm.ChannelOptions.Select(item => item.Value));
+        Assert.True(vm.ChannelOptions.Single(item => item.Value == 2).IsEnabled);
+        Assert.False(vm.ChannelOptions.Single(item => item.Value == 4).IsEnabled);
+        Assert.Contains(vm.SampleRateOptions, item => item.Value == 12345 && item.IsEnabled);
+        Assert.True(vm.SampleRateOptions.Single(item => item.Value == 32000).IsEnabled);
+        Assert.False(vm.SampleRateOptions.Single(item => item.Value == 44100).IsEnabled);
+        Assert.Equal(new[] { 16, 20, 24, 32 }, vm.BitDepthOptions.Select(item => item.Value));
+        Assert.False(vm.BitDepthOptions.Single(item => item.Value == 20).IsEnabled);
+    }
+
+    [Fact]
+    public async Task Sample_rate_and_bit_depth_switches_clear_invalid_selection_without_auto_selecting()
+    {
+        var vm = NewViewModel(out var harness);
+        SeedEndpoints(harness, "ep-1");
+        SeedOptions(harness, channels: new[] { 2 }, formats: new[]
+        {
+            new ControlPanelFormatItem(0, "16 bit, 32000 Hz", null, 32000, 16, 16, ControlPanelParseStatus.Parsed, null),
+            new ControlPanelFormatItem(1, "24 bit, 48000 Hz", null, 48000, 24, 32, ControlPanelParseStatus.Parsed, null),
+        });
+
+        await vm.LoadEndpointsAsync(CancellationToken.None);
+        await vm.EndpointChangedAsync(vm.Endpoints[0], CancellationToken.None);
+        vm.SelectSampleRate(48000);
+        vm.SelectBitDepth(24);
+
+        vm.SelectSampleRate(32000);
+
+        Assert.Equal(32000, vm.SelectedSampleRate);
+        Assert.Null(vm.SelectedBitDepth);
+        Assert.False(vm.BitDepthOptions.Single(item => item.Value == 24).IsEnabled);
+        Assert.True(vm.BitDepthOptions.Single(item => item.Value == 16).IsEnabled);
+        Assert.DoesNotContain(vm.BitDepthOptions, item => item.IsSelected);
+    }
+
+    [Fact]
+    public async Task Exact_switch_selection_enables_apply_and_maps_to_filtered_format_index()
+    {
+        var vm = NewViewModel(out var harness);
+        SeedEndpoints(harness, "ep-1");
+        SeedOptions(harness, channels: new[] { 2 }, formats: new[]
+        {
+            new ControlPanelFormatItem(8, "duplicate", null, 32000, 16, 16, ControlPanelParseStatus.Parsed, null),
+            new ControlPanelFormatItem(21, "duplicate", null, 48000, 24, 32, ControlPanelParseStatus.Parsed, null),
+        });
+        harness.Svcl
+            .EnqueueSavedFormat(Format(2, 16, 32000, 0x3))
+            .EnqueueSavedFormat(Format(2, 24, 48000, 0x3));
+
+        await vm.LoadEndpointsAsync(CancellationToken.None);
+        await vm.EndpointChangedAsync(vm.Endpoints[0], CancellationToken.None);
+        vm.SelectChannel(2);
+        vm.SelectSampleRate(48000);
+        vm.SelectBitDepth(24);
+
+        Assert.True(vm.CanApply);
+        var result = await vm.ApplyAsync(CancellationToken.None);
+
+        Assert.Equal(SwitchStatus.Pass, result.Status);
+        Assert.Contains("SetFormat:ep-1:2:24:48000", harness.Svcl.Operations);
+    }
+
+    [Fact]
     public async Task LoadEndpointsAsync_populates_endpoints_collection()
     {
         var vm = NewViewModel(out var harness);

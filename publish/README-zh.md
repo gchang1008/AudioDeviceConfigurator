@@ -23,7 +23,7 @@ AudioDeviceConfigurator 會讀取指定 Windows 播放裝置在傳統「聲音�
 
 ## GUI 流程
 
-主畫面會列出 Core Audio 偵測到的所有活動播放端點。選擇端點後，會從傳統「聲音」控制台重新載入該端點的聲道數與預設格式清單。按 Apply 通過 SVCL 驗證切換成功後，GUI 會立即以 WASAPI Shared Mode 對所選端點循環播放 `test_audio.wav`，讓使用者即時聽到新格式的效果。
+主畫面會列出 Core Audio 偵測到的所有活動播放端點。選擇端點後，會從傳統「聲音」控制台重新載入該端點的聲道數與預設格式清單。Speaker Channels、Sample Rate 與 Bit Depth 會以三組 Switch 顯示；常見值會保留顯示，不支援者則停用。Sample Rate 與 Bit Depth 依控制台實際列出的精確組合互相限制，聲道清單則維持獨立。按 Apply 通過 SVCL 驗證切換成功後，GUI 會立即以 WASAPI Shared Mode 對所選端點循環播放 `test_audio.wav`，讓使用者即時聽到新格式的效果。
 
 - 套用期間 Apply、Play、Stop 會鎖定。
 - 只有在切換驗證成功且未播放時，Play 才會啟用。

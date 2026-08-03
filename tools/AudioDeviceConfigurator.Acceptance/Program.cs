@@ -1,4 +1,3 @@
-using System.Text.RegularExpressions;
 using AudioDeviceConfigurator.Svcl;
 using AudioDeviceConfigurator.Windows;
 
@@ -74,15 +73,13 @@ internal static class Program
             ?? throw new InvalidOperationException($"The GUI does not expose endpoint '{endpointId}'.");
         gui.SelectEndpoint(endpointId);
         var channels = gui.WaitForChannels();
-        var formats = gui.WaitForFormats();
+        var sampleRates = gui.WaitForSampleRates();
+        var bitDepths = gui.WaitForBitDepths();
         Console.WriteLine();
         Console.WriteLine($"Selected endpoint: {selected.Name}");
-        Console.WriteLine($"Channels: {string.Join(", ", channels)}");
-        Console.WriteLine("Formats:");
-        foreach (var format in formats)
-        {
-            Console.WriteLine($"  {format}");
-        }
+        PrintSwitches("Channels", channels);
+        PrintSwitches("Sample rates", sampleRates);
+        PrintSwitches("Bit depths", bitDepths);
 
         return AcceptanceOutcome.Pass;
     }
@@ -90,11 +87,20 @@ internal static class Program
     private static AcceptanceOutcome Run(string executable, IReadOnlyDictionary<string, string> options)
     {
         var endpointId = Require(options, "endpoint-id");
-        var formatText = Require(options, "format-text");
         if (!int.TryParse(Require(options, "channels"), out var channels)
             || channels is not (2 or 4 or 6 or 8))
         {
             throw new ArgumentException("--channels must be 2, 4, 6, or 8.");
+        }
+        if (!int.TryParse(Require(options, "sample-rate"), out var sampleRate)
+            || sampleRate is < 8000 or > 384000)
+        {
+            throw new ArgumentException("--sample-rate must be between 8000 and 384000.");
+        }
+        if (!int.TryParse(Require(options, "bit-depth"), out var bitDepth)
+            || bitDepth is not (16 or 20 or 24 or 32))
+        {
+            throw new ArgumentException("--bit-depth must be 16, 20, 24, or 32.");
         }
 
         var appDirectory = Path.GetDirectoryName(executable)!;
@@ -112,18 +118,18 @@ internal static class Program
             ?? throw new InvalidOperationException($"The GUI does not expose endpoint '{endpointId}'.");
         gui.SelectEndpoint(endpointId);
         var availableChannels = gui.WaitForChannels();
-        var formats = gui.WaitForFormats();
-        if (!availableChannels.Contains(channels.ToString(), StringComparer.Ordinal)
-            || !formats.Contains(formatText, StringComparer.Ordinal))
-        {
-            throw new InvalidOperationException("The requested channel or format is not exposed by the GUI.");
-        }
+        var availableSampleRates = gui.WaitForSampleRates();
+        var availableBitDepths = gui.WaitForBitDepths();
+        RequireEnabled(availableChannels, $"ChannelOption-{channels}");
+        RequireEnabled(availableSampleRates, $"SampleRateOption-{sampleRate}");
+        RequireEnabled(availableBitDepths, $"BitDepthOption-{bitDepth}");
 
         Console.WriteLine("The acceptance run will permanently keep a successful setting:");
         Console.WriteLine($"  Endpoint : {endpoint.Name}");
         Console.WriteLine($"  ID       : {endpointId}");
-        Console.WriteLine($"  Channels : {channels}");
-        Console.WriteLine($"  Format   : {formatText}");
+        Console.WriteLine($"  Channels   : {channels}");
+        Console.WriteLine($"  Sample rate: {sampleRate}");
+        Console.WriteLine($"  Bit depth  : {bitDepth}");
         Console.WriteLine($"  Original : {before}");
         Console.Write("Type APPLY to continue: ");
         if (!string.Equals(Console.ReadLine()?.Trim(), "APPLY", StringComparison.Ordinal))
@@ -132,7 +138,8 @@ internal static class Program
         }
 
         gui.SelectChannel(channels);
-        gui.SelectFormat(formatText);
+        gui.SelectSampleRate(sampleRate);
+        gui.SelectBitDepth(bitDepth);
         if (!gui.IsEnabled("ApplyButton"))
         {
             throw new InvalidOperationException("Apply did not become enabled after selecting valid options.");
@@ -155,12 +162,11 @@ internal static class Program
                 status => status.Contains("Switch verified; playing test audio.", StringComparison.Ordinal),
                 "The GUI did not report a verified switch with automatic playback.");
 
-            var requested = ParseFormat(formatText);
             var after = svcl.SaveDeviceFormat(endpointId);
             var expectedMask = SvclClient.GetSpeakerMask(channels);
             if (after.Channels != channels
-                || after.EffectiveBits != requested.EffectiveBits
-                || after.SampleRate != requested.SampleRate
+                || after.EffectiveBits != bitDepth
+                || after.SampleRate != sampleRate
                 || after.ChannelMask != expectedMask)
             {
                 throw new InvalidOperationException($"SVCL readback mismatch. Actual: {after}, mask=0x{after.ChannelMask:x}.");
@@ -284,18 +290,23 @@ internal static class Program
         RequireButtonStates(gui, apply, play, stop, stage);
     }
 
-    private static (int EffectiveBits, int SampleRate) ParseFormat(string text)
+    private static void PrintSwitches(string label, IReadOnlyList<GuiSwitchOption> options)
     {
-        var numbers = Regex.Matches(text, @"\d+")
-            .Select(match => int.Parse(match.Value))
-            .ToArray();
-        var bits = numbers.FirstOrDefault(value => value is 16 or 20 or 24 or 32);
-        var rate = numbers.FirstOrDefault(value => value is >= 8000 and <= 384000 && value != bits);
-        if (bits == 0 || rate == 0)
+        Console.WriteLine($"{label}:");
+        foreach (var option in options)
         {
-            throw new InvalidOperationException("The selected GUI format text could not be parsed for readback verification.");
+            Console.WriteLine($"  {option.Name} [{(option.IsEnabled ? "enabled" : "disabled")}]");
         }
-        return (bits, rate);
+    }
+
+    private static void RequireEnabled(IReadOnlyList<GuiSwitchOption> options, string automationId)
+    {
+        var option = options.SingleOrDefault(item => item.AutomationId == automationId)
+            ?? throw new InvalidOperationException($"'{automationId}' is not exposed by the GUI.");
+        if (!option.IsEnabled)
+        {
+            throw new InvalidOperationException($"'{automationId}' is disabled by the GUI.");
+        }
     }
 
     private static IReadOnlyDictionary<string, string> ParseOptions(string[] args)
@@ -333,7 +344,7 @@ internal static class Program
     private static void PrintUsage() => Console.WriteLine(
         """
         AudioDeviceConfigurator.Acceptance inspect [--endpoint-id <id>] [--app <path>]
-        AudioDeviceConfigurator.Acceptance run --endpoint-id <id> --channels <2|4|6|8> --format-text <text> [--app <path>]
+        AudioDeviceConfigurator.Acceptance run --endpoint-id <id> --channels <2|4|6|8> --sample-rate <hz> --bit-depth <16|20|24|32> [--app <path>]
 
         inspect never clicks Apply. run requires typing APPLY immediately before any setter can start.
         """);

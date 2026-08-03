@@ -18,7 +18,13 @@ public sealed class MainViewModel : INotifyPropertyChanged
     private readonly Func<CancellationTokenSource> _createCancellation;
     private readonly Func<EndpointInfo, WaveSource>? _resolveWaveSource;
     private readonly Action<Action> _dispatch;
+    private readonly HashSet<(int SampleRate, int BitDepth)> _formatPairs = new();
     private CancellationTokenSource? _applyCancellation;
+
+    private static readonly int[] CommonChannels = [2, 4, 6, 8];
+    private static readonly int[] CommonSampleRates =
+        [8000, 11025, 16000, 22050, 32000, 44100, 48000, 88200, 96000, 176400, 192000, 352800, 384000];
+    private static readonly int[] CommonBitDepths = [16, 20, 24, 32];
 
     public MainViewModel(
         DeviceConfigurationService service,
@@ -46,6 +52,12 @@ public sealed class MainViewModel : INotifyPropertyChanged
 
     public ObservableCollection<ControlPanelFormatItem> Formats { get; } = new();
 
+    public ObservableCollection<NumericSwitchOption> ChannelOptions { get; } = new();
+
+    public ObservableCollection<NumericSwitchOption> SampleRateOptions { get; } = new();
+
+    public ObservableCollection<NumericSwitchOption> BitDepthOptions { get; } = new();
+
     public EndpointInfo? SelectedEndpoint { get; private set; }
 
     public EndpointOptions? SelectedEndpointOptions { get; private set; }
@@ -53,6 +65,12 @@ public sealed class MainViewModel : INotifyPropertyChanged
     public int? SelectedChannelIndex { get; private set; }
 
     public int? SelectedFormatIndex { get; private set; }
+
+    public int? SelectedChannel { get; private set; }
+
+    public int? SelectedSampleRate { get; private set; }
+
+    public int? SelectedBitDepth { get; private set; }
 
     public string StatusMessage
     {
@@ -76,8 +94,11 @@ public sealed class MainViewModel : INotifyPropertyChanged
     }
 
     public bool CanApply => SelectedEndpoint is not null
-        && SelectedChannelIndex is not null
-        && SelectedFormatIndex is not null
+        && SelectedEndpointOptions is not null
+        && SelectedChannel is not null
+        && SelectedSampleRate is not null
+        && SelectedBitDepth is not null
+        && _formatPairs.Contains((SelectedSampleRate.Value, SelectedBitDepth.Value))
         && !IsBusy
         && !_playback.IsPlaying;
 
@@ -131,6 +152,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
         SelectedEndpointOptions = null;
         SelectedChannelIndex = null;
         SelectedFormatIndex = null;
+        ClearSwitchSelection();
         OnPropertyChanged(nameof(SelectedChannelIndex));
         OnPropertyChanged(nameof(SelectedFormatIndex));
         SetBusy(true);
@@ -145,6 +167,62 @@ public sealed class MainViewModel : INotifyPropertyChanged
         }
     }
 
+    public void SelectChannel(int value)
+    {
+        var option = ChannelOptions.SingleOrDefault(item => item.Value == value && item.IsEnabled);
+        if (option is null)
+        {
+            return;
+        }
+
+        SelectedChannel = value;
+        SetSelected(ChannelOptions, value);
+        OnPropertyChanged(nameof(SelectedChannel));
+        OnPropertyChanged(nameof(CanApply));
+    }
+
+    public void SelectSampleRate(int value)
+    {
+        var option = SampleRateOptions.SingleOrDefault(item => item.Value == value && item.IsEnabled);
+        if (option is null)
+        {
+            return;
+        }
+
+        SelectedSampleRate = value;
+        SetSelected(SampleRateOptions, value);
+        if (SelectedBitDepth is int bitDepth && !_formatPairs.Contains((value, bitDepth)))
+        {
+            SelectedBitDepth = null;
+            SetSelected(BitDepthOptions, null);
+            OnPropertyChanged(nameof(SelectedBitDepth));
+        }
+        RefreshFormatOptionState();
+        OnPropertyChanged(nameof(SelectedSampleRate));
+        OnPropertyChanged(nameof(CanApply));
+    }
+
+    public void SelectBitDepth(int value)
+    {
+        var option = BitDepthOptions.SingleOrDefault(item => item.Value == value && item.IsEnabled);
+        if (option is null)
+        {
+            return;
+        }
+
+        SelectedBitDepth = value;
+        SetSelected(BitDepthOptions, value);
+        if (SelectedSampleRate is int sampleRate && !_formatPairs.Contains((sampleRate, value)))
+        {
+            SelectedSampleRate = null;
+            SetSelected(SampleRateOptions, null);
+            OnPropertyChanged(nameof(SelectedSampleRate));
+        }
+        RefreshFormatOptionState();
+        OnPropertyChanged(nameof(SelectedBitDepth));
+        OnPropertyChanged(nameof(CanApply));
+    }
+
     public void SelectChannelIndex(int index)
     {
         if (SelectedChannelIndex == index)
@@ -152,6 +230,10 @@ public sealed class MainViewModel : INotifyPropertyChanged
             return;
         }
         SelectedChannelIndex = Channels.Count > index ? index : null;
+        if (SelectedChannelIndex is int selectedIndex)
+        {
+            SelectChannel(Channels[selectedIndex]);
+        }
         OnPropertyChanged(nameof(SelectedChannelIndex));
         OnPropertyChanged(nameof(CanApply));
     }
@@ -163,6 +245,12 @@ public sealed class MainViewModel : INotifyPropertyChanged
             return;
         }
         SelectedFormatIndex = Formats.Count > index ? index : null;
+        if (SelectedFormatIndex is int selectedIndex)
+        {
+            var format = Formats[selectedIndex];
+            SelectSampleRate(format.SampleRate!.Value);
+            SelectBitDepth(format.EffectiveBits!.Value);
+        }
         OnPropertyChanged(nameof(SelectedFormatIndex));
         OnPropertyChanged(nameof(CanApply));
     }
@@ -170,17 +258,19 @@ public sealed class MainViewModel : INotifyPropertyChanged
     public async Task<SwitchResult> ApplyAsync(CancellationToken cancellationToken)
     {
         if (SelectedEndpoint is null || SelectedEndpointOptions is null
-            || SelectedChannelIndex is null || SelectedFormatIndex is null)
+            || SelectedChannel is null || SelectedSampleRate is null || SelectedBitDepth is null)
         {
-            return new SwitchResult(SwitchStatus.SystemError, "Select endpoint, channel, and format first.", true);
+            return new SwitchResult(SwitchStatus.SystemError, "Select endpoint, channel, sample rate, and bit depth first.", true);
         }
 
         var endpoint = SelectedEndpoint;
         var options = SelectedEndpointOptions;
-        var channels = options.Channels;
-        var formats = options.Formats;
-        var channel = channels[SelectedChannelIndex.Value];
-        var formatIndex = SelectedFormatIndex.Value;
+        var channel = SelectedChannel.Value;
+        var formatIndex = FindFormatIndex(options, SelectedSampleRate.Value, SelectedBitDepth.Value);
+        if (formatIndex < 0)
+        {
+            return new SwitchResult(SwitchStatus.SystemError, "The selected sample rate and bit depth are not available.", true);
+        }
 
         _applyCancellation?.Dispose();
         _applyCancellation = _createCancellation();
@@ -293,6 +383,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
                 {
                     Formats.Add(format);
                 }
+                BuildSwitchOptions(available.Options);
                 StatusMessage = Channels.Count == 0 || Formats.Count == 0
                     ? "Endpoint has no selectable options."
                     : "Select channel and format, then Apply.";
@@ -301,6 +392,91 @@ public sealed class MainViewModel : INotifyPropertyChanged
                 StatusMessage = "Endpoint has no selectable options.";
                 break;
         }
+    }
+
+    private void BuildSwitchOptions(EndpointOptions options)
+    {
+        ChannelOptions.Clear();
+        SampleRateOptions.Clear();
+        BitDepthOptions.Clear();
+        _formatPairs.Clear();
+
+        foreach (var format in options.Formats)
+        {
+            _formatPairs.Add((format.SampleRate!.Value, format.EffectiveBits!.Value));
+        }
+
+        foreach (var value in CommonChannels)
+        {
+            ChannelOptions.Add(new NumericSwitchOption(value, $"{value} ch", $"ChannelOption-{value}")
+            {
+                IsEnabled = options.Channels.Contains(value),
+            });
+        }
+
+        foreach (var value in CommonSampleRates
+                     .Concat(_formatPairs.Select(pair => pair.SampleRate))
+                     .Distinct()
+                     .OrderBy(value => value))
+        {
+            SampleRateOptions.Add(new NumericSwitchOption(value, $"{value:N0} Hz", $"SampleRateOption-{value}"));
+        }
+
+        foreach (var value in CommonBitDepths)
+        {
+            BitDepthOptions.Add(new NumericSwitchOption(value, $"{value}-bit", $"BitDepthOption-{value}"));
+        }
+
+        RefreshFormatOptionState();
+    }
+
+    private void RefreshFormatOptionState()
+    {
+        foreach (var option in SampleRateOptions)
+        {
+            option.IsEnabled = _formatPairs.Any(pair => pair.SampleRate == option.Value);
+        }
+        foreach (var option in BitDepthOptions)
+        {
+            option.IsEnabled = SelectedSampleRate is int sampleRate
+                ? _formatPairs.Contains((sampleRate, option.Value))
+                : _formatPairs.Any(pair => pair.BitDepth == option.Value);
+        }
+    }
+
+    private void ClearSwitchSelection()
+    {
+        SelectedChannel = null;
+        SelectedSampleRate = null;
+        SelectedBitDepth = null;
+        SetSelected(ChannelOptions, null);
+        SetSelected(SampleRateOptions, null);
+        SetSelected(BitDepthOptions, null);
+        OnPropertyChanged(nameof(SelectedChannel));
+        OnPropertyChanged(nameof(SelectedSampleRate));
+        OnPropertyChanged(nameof(SelectedBitDepth));
+        OnPropertyChanged(nameof(CanApply));
+    }
+
+    private static void SetSelected(IEnumerable<NumericSwitchOption> options, int? value)
+    {
+        foreach (var option in options)
+        {
+            option.IsSelected = option.Value == value;
+        }
+    }
+
+    private static int FindFormatIndex(EndpointOptions options, int sampleRate, int bitDepth)
+    {
+        for (var index = 0; index < options.Formats.Count; index++)
+        {
+            var format = options.Formats[index];
+            if (format.SampleRate == sampleRate && format.EffectiveBits == bitDepth)
+            {
+                return index;
+            }
+        }
+        return -1;
     }
 
     private void ApplyStatusMessage(SwitchResult result)

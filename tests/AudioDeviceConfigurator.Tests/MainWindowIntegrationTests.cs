@@ -72,10 +72,12 @@ public sealed class MainWindowIntegrationTests : IDisposable
                 System.Windows.Automation.AutomationProperties.GetAutomationId(_harness.Window!));
             Assert.Equal("EndpointCombo",
                 System.Windows.Automation.AutomationProperties.GetAutomationId(_harness.EndpointCombo));
-            Assert.Equal("ChannelCombo",
-                System.Windows.Automation.AutomationProperties.GetAutomationId(_harness.ChannelCombo));
-            Assert.Equal("FormatCombo",
-                System.Windows.Automation.AutomationProperties.GetAutomationId(_harness.FormatCombo));
+            Assert.Equal("ChannelsSwitchGroup",
+                System.Windows.Automation.AutomationProperties.GetAutomationId(_harness.ChannelsSwitchGroup));
+            Assert.Equal("SampleRateSwitchGroup",
+                System.Windows.Automation.AutomationProperties.GetAutomationId(_harness.SampleRateSwitchGroup));
+            Assert.Equal("BitDepthSwitchGroup",
+                System.Windows.Automation.AutomationProperties.GetAutomationId(_harness.BitDepthSwitchGroup));
             Assert.Equal("ApplyButton",
                 System.Windows.Automation.AutomationProperties.GetAutomationId(_harness.ApplyButton));
             Assert.Equal("PlayButton",
@@ -95,20 +97,12 @@ public sealed class MainWindowIntegrationTests : IDisposable
         _harness.Invoke(() => dataContext = window.DataContext);
         Assert.Same(_harness.ViewModel, dataContext);
 
-        foreach (var comboBox in new[]
-                 {
-                     _harness.EndpointCombo,
-                     _harness.ChannelCombo,
-                     _harness.FormatCombo,
-                 })
-        {
-            System.Windows.Data.BindingExpression? expression = null;
-            _harness.Invoke(() => expression = System.Windows.Data.BindingOperations.GetBindingExpression(
-                comboBox, UIElement.IsEnabledProperty));
-            Assert.NotNull(expression);
-            Assert.Equal(nameof(MainViewModel.CanChangeSelection), expression!.ParentBinding.Path.Path);
-            Assert.Same(_harness.ViewModel, expression.DataItem);
-        }
+        System.Windows.Data.BindingExpression? endpointExpression = null;
+        _harness.Invoke(() => endpointExpression = System.Windows.Data.BindingOperations.GetBindingExpression(
+            _harness.EndpointCombo, UIElement.IsEnabledProperty));
+        Assert.NotNull(endpointExpression);
+        Assert.Equal(nameof(MainViewModel.CanChangeSelection), endpointExpression!.ParentBinding.Path.Path);
+        Assert.Same(_harness.ViewModel, endpointExpression.DataItem);
 
         System.Windows.Data.BindingExpression? applyExpression = null;
         _harness.Invoke(() => applyExpression = System.Windows.Data.BindingOperations.GetBindingExpression(
@@ -130,7 +124,7 @@ public sealed class MainWindowIntegrationTests : IDisposable
     }
 
     [Fact]
-    public void MainViewModel_raises_PropertyChanged_when_IsBusy_changes()
+    public async Task MainViewModel_raises_PropertyChanged_when_IsBusy_changes()
     {
         var changes = new List<string?>();
         _harness.ViewModel.PropertyChanged += (_, e) => changes.Add(e.PropertyName);
@@ -138,24 +132,25 @@ public sealed class MainWindowIntegrationTests : IDisposable
         _harness.Invoke(() => _harness.ViewModel.LoadEndpointsAsync(CancellationToken.None));
         // IsBusy is not flipped by LoadEndpointsAsync (it does not toggle), so use a synchronous
         // trigger that the VM exposes internally.
-        // Direct setter access isn't possible; instead verify ChannelCombo selection drives
+        // Direct setter access isn't possible; verify selection changes raise the expected notifications.
         // SelectedChannelIndex which should fire PropertyChanged for SelectedChannelIndex + CanApply.
         _harness.SeedEndpoint("ep-1", isDefault: true);
         _harness.SeedOptions("ep-1", channels: new[] { 2 }, formats: new[]
         {
             new ControlPanelFormatItem(0, "16 bit, 44100 Hz", 2, 44100, 16, 16, ControlPanelParseStatus.Parsed, null),
         });
-        _harness.Invoke(async () =>
+        await _harness.Window!.Dispatcher.InvokeAsync(async () =>
         {
             await _harness.ViewModel.LoadEndpointsAsync(CancellationToken.None);
             await _harness.ViewModel.EndpointChangedAsync(_harness.ViewModel.Endpoints[0], CancellationToken.None);
             _harness.ViewModel.SelectChannelIndex(0);
             _harness.ViewModel.SelectFormatIndex(0);
-        });
+        }).Task.Unwrap();
 
-        Assert.Contains(nameof(MainViewModel.SelectedEndpoint), changes);
-        Assert.Contains(nameof(MainViewModel.SelectedChannelIndex), changes);
-        Assert.Contains(nameof(MainViewModel.CanApply), changes);
+        var observedChanges = changes.ToArray();
+        Assert.Contains(nameof(MainViewModel.SelectedEndpoint), observedChanges);
+        Assert.Contains(nameof(MainViewModel.SelectedChannelIndex), observedChanges);
+        Assert.Contains(nameof(MainViewModel.CanApply), observedChanges);
     }
 
     [Fact]
@@ -180,8 +175,7 @@ public sealed class MainWindowIntegrationTests : IDisposable
 
         _harness.Invoke(() =>
         {
-            _harness.ChannelCombo.SelectedIndex = 0;
-            _harness.FormatCombo.SelectedIndex = 0;
+            _harness.SelectConfiguration(2, 44100, 16);
         });
 
         await _harness.WaitForApplyEnabledAsync(TimeSpan.FromSeconds(5));
@@ -204,8 +198,7 @@ public sealed class MainWindowIntegrationTests : IDisposable
 
         _harness.Invoke(() =>
         {
-            _harness.ChannelCombo.SelectedIndex = 0;
-            _harness.FormatCombo.SelectedIndex = 0;
+            _harness.SelectConfiguration(2, 44100, 16);
         });
 
         await _harness.WaitForApplyEnabledAsync(TimeSpan.FromSeconds(5));
@@ -234,8 +227,7 @@ public sealed class MainWindowIntegrationTests : IDisposable
         await _harness.WaitForChannelsAsync(TimeSpan.FromSeconds(5));
         _harness.Invoke(() =>
         {
-            _harness.ChannelCombo.SelectedIndex = 0;
-            _harness.FormatCombo.SelectedIndex = 0;
+            _harness.SelectConfiguration(2, 44100, 16);
             _harness.ApplyButton.RaiseEvent(new RoutedEventArgs(System.Windows.Controls.Primitives.ButtonBase.ClickEvent));
         });
 
@@ -266,8 +258,7 @@ public sealed class MainWindowIntegrationTests : IDisposable
         await _harness.WaitForChannelsAsync(TimeSpan.FromSeconds(5));
         _harness.Invoke(() =>
         {
-            _harness.ChannelCombo.SelectedIndex = 0;
-            _harness.FormatCombo.SelectedIndex = 0;
+            _harness.SelectConfiguration(2, 44100, 16);
             _harness.ApplyButton.RaiseEvent(new RoutedEventArgs(System.Windows.Controls.Primitives.ButtonBase.ClickEvent));
         });
         await _harness.WaitForPlaybackStartedAsync(TimeSpan.FromSeconds(5));
@@ -291,8 +282,9 @@ public sealed class MainWindowIntegrationTests : IDisposable
         public MainWindow? Window { get; set; }
         public MainViewModel ViewModel { get; set; } = null!;
         public ComboBox EndpointCombo { get; set; } = null!;
-        public ComboBox ChannelCombo { get; set; } = null!;
-        public ComboBox FormatCombo { get; set; } = null!;
+        public ItemsControl ChannelsSwitchGroup { get; set; } = null!;
+        public ItemsControl SampleRateSwitchGroup { get; set; } = null!;
+        public ItemsControl BitDepthSwitchGroup { get; set; } = null!;
         public Button ApplyButton { get; set; } = null!;
         public Button PlayButton { get; set; } = null!;
         public Button StopButton { get; set; } = null!;
@@ -310,8 +302,9 @@ public sealed class MainWindowIntegrationTests : IDisposable
                 dispatcher: action => action());
             var window = new MainWindow(ViewModel);
             EndpointCombo = (ComboBox)window.FindName("EndpointCombo")!;
-            ChannelCombo = (ComboBox)window.FindName("ChannelCombo")!;
-            FormatCombo = (ComboBox)window.FindName("FormatCombo")!;
+            ChannelsSwitchGroup = (ItemsControl)window.FindName("ChannelsSwitchGroup")!;
+            SampleRateSwitchGroup = (ItemsControl)window.FindName("SampleRateSwitchGroup")!;
+            BitDepthSwitchGroup = (ItemsControl)window.FindName("BitDepthSwitchGroup")!;
             ApplyButton = (Button)window.FindName("ApplyButton")!;
             PlayButton = (Button)window.FindName("PlayButton")!;
             StopButton = (Button)window.FindName("StopButton")!;
@@ -340,6 +333,13 @@ public sealed class MainWindowIntegrationTests : IDisposable
                     channels.Max(),
                     new ControlPanelFormatSnapshot(DateTimeOffset.MinValue, DateTimeOffset.MinValue, "fake", true, true, null));
             };
+        }
+
+        public void SelectConfiguration(int channels, int sampleRate, int bitDepth)
+        {
+            ViewModel.SelectChannel(channels);
+            ViewModel.SelectSampleRate(sampleRate);
+            ViewModel.SelectBitDepth(bitDepth);
         }
 
         public void Invoke(Action action) =>

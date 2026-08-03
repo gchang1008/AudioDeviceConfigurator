@@ -4,6 +4,7 @@ using System.Windows.Automation;
 namespace AudioDeviceConfigurator.Acceptance;
 
 internal sealed record GuiOption(string Name, string? HelpText);
+internal sealed record GuiSwitchOption(string AutomationId, string Name, bool IsEnabled, bool IsSelected);
 
 internal sealed class GuiAutomation : IDisposable
 {
@@ -34,13 +35,9 @@ internal sealed class GuiAutomation : IDisposable
                 {
                     return null;
                 }
-
                 var candidate = AutomationElement.FromHandle(process.MainWindowHandle);
-                return candidate.Current.AutomationId == "AudioDeviceConfigurator.MainWindow"
-                    ? candidate
-                    : null;
+                return candidate.Current.AutomationId == "AudioDeviceConfigurator.MainWindow" ? candidate : null;
             }, DefaultTimeout, "The AudioDeviceConfigurator main window did not appear.");
-
             return new GuiAutomation(process, window);
         }
         catch
@@ -85,35 +82,20 @@ internal sealed class GuiAutomation : IDisposable
         }
     }
 
-    public IReadOnlyList<string> WaitForChannels()
-    {
-        try
-        {
-            return WaitUntil(() => ReadComboNames("ChannelCombo"), DefaultTimeout,
-                "Speaker-channel options were not loaded.", values => values.Count > 0);
-        }
-        catch (TimeoutException ex)
-        {
-            throw new TimeoutException($"{ex.Message} Last GUI status: {Status}", ex);
-        }
-    }
+    public IReadOnlyList<GuiSwitchOption> WaitForChannels() =>
+        WaitForSwitches("ChannelsSwitchGroup", "Speaker-channel options were not loaded.");
 
-    public IReadOnlyList<string> WaitForFormats()
-    {
-        try
-        {
-            return WaitUntil(() => ReadComboNames("FormatCombo"), DefaultTimeout,
-                "Default-format options were not loaded.", values => values.Count > 0);
-        }
-        catch (TimeoutException ex)
-        {
-            throw new TimeoutException($"{ex.Message} Last GUI status: {Status}", ex);
-        }
-    }
+    public IReadOnlyList<GuiSwitchOption> WaitForSampleRates() =>
+        WaitForSwitches("SampleRateSwitchGroup", "Sample-rate options were not loaded.");
 
-    public void SelectChannel(int channels) => SelectByName("ChannelCombo", channels.ToString());
+    public IReadOnlyList<GuiSwitchOption> WaitForBitDepths() =>
+        WaitForSwitches("BitDepthSwitchGroup", "Bit-depth options were not loaded.");
 
-    public void SelectFormat(string formatText) => SelectByName("FormatCombo", formatText);
+    public void SelectChannel(int channels) => SelectSwitch($"ChannelOption-{channels}");
+
+    public void SelectSampleRate(int sampleRate) => SelectSwitch($"SampleRateOption-{sampleRate}");
+
+    public void SelectBitDepth(int bitDepth) => SelectSwitch($"BitDepthOption-{bitDepth}");
 
     public void Invoke(string automationId)
     {
@@ -153,7 +135,6 @@ internal sealed class GuiAutomation : IDisposable
             }
             Thread.Sleep(100);
         }
-
         throw new TimeoutException($"{failureMessage} Status history: {string.Join(" -> ", history)}");
     }
 
@@ -163,7 +144,6 @@ internal sealed class GuiAutomation : IDisposable
         {
             return;
         }
-
         if (_window.TryGetCurrentPattern(WindowPattern.Pattern, out var pattern))
         {
             ((WindowPattern)pattern).Close();
@@ -172,7 +152,6 @@ internal sealed class GuiAutomation : IDisposable
         {
             _process.CloseMainWindow();
         }
-
         if (!_process.WaitForExit(5000))
         {
             _process.Kill(true);
@@ -186,36 +165,44 @@ internal sealed class GuiAutomation : IDisposable
         _process.Dispose();
     }
 
-    private IReadOnlyList<string> ReadComboNames(string automationId)
+    private IReadOnlyList<GuiSwitchOption> WaitForSwitches(string groupId, string failureMessage)
     {
-        var combo = Find(automationId);
-        Expand(combo);
         try
         {
-            return GetListItems(combo).Select(item => item.Current.Name).ToArray();
+            return WaitUntil(
+                () => ReadSwitches(groupId),
+                DefaultTimeout,
+                failureMessage,
+                values => values.Count > 0);
         }
-        finally
+        catch (TimeoutException ex)
         {
-            Collapse(combo);
+            throw new TimeoutException($"{ex.Message} Last GUI status: {Status}", ex);
         }
     }
 
-    private void SelectByName(string automationId, string name)
+    private IReadOnlyList<GuiSwitchOption> ReadSwitches(string groupId)
     {
-        var combo = Find(automationId);
-        Expand(combo);
-        try
+        var group = Find(groupId);
+        return group.FindAll(TreeScope.Descendants,
+                new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.RadioButton))
+            .Cast<AutomationElement>()
+            .Select(item => new GuiSwitchOption(
+                item.Current.AutomationId,
+                item.Current.Name,
+                item.Current.IsEnabled,
+                IsSelected: false))
+            .ToArray();
+    }
+
+    private void SelectSwitch(string automationId)
+    {
+        var item = Find(automationId);
+        if (!item.Current.IsEnabled)
         {
-            var items = GetListItems(combo);
-            var item = items.FirstOrDefault(candidate =>
-                string.Equals(candidate.Current.Name, name, StringComparison.Ordinal))
-                ?? throw new InvalidOperationException($"'{name}' was not found in {automationId}.");
-            Select(item);
+            throw new InvalidOperationException($"'{automationId}' is disabled.");
         }
-        finally
-        {
-            Collapse(combo);
-        }
+        Select(item);
     }
 
     private AutomationElement Find(string automationId) =>
@@ -241,14 +228,33 @@ internal sealed class GuiAutomation : IDisposable
 
     private static void Collapse(AutomationElement combo)
     {
-        if (combo.TryGetCurrentPattern(ExpandCollapsePattern.Pattern, out var pattern))
+        try
         {
-            ((ExpandCollapsePattern)pattern).Collapse();
+            if (combo.Current.IsEnabled
+                && combo.TryGetCurrentPattern(ExpandCollapsePattern.Pattern, out var pattern))
+            {
+                ((ExpandCollapsePattern)pattern).Collapse();
+            }
+        }
+        catch (ElementNotEnabledException)
+        {
         }
     }
 
-    private static void Select(AutomationElement item) =>
-        ((SelectionItemPattern)item.GetCurrentPattern(SelectionItemPattern.Pattern)).Select();
+    private static void Select(AutomationElement item)
+    {
+        if (item.TryGetCurrentPattern(SelectionItemPattern.Pattern, out var selectionPattern))
+        {
+            ((SelectionItemPattern)selectionPattern).Select();
+            return;
+        }
+        if (item.TryGetCurrentPattern(InvokePattern.Pattern, out var invokePattern))
+        {
+            ((InvokePattern)invokePattern).Invoke();
+            return;
+        }
+        throw new InvalidOperationException($"'{item.Current.AutomationId}' cannot be selected.");
+    }
 
     private static T WaitUntil<T>(
         Func<T?> read,
@@ -275,34 +281,14 @@ internal sealed class GuiAutomation : IDisposable
             }
             Thread.Sleep(100);
         }
-
         throw new TimeoutException(failureMessage, lastError);
     }
 
-    private static string WaitUntil(
-        Func<string> read,
+    private static IReadOnlyList<GuiSwitchOption> WaitUntil(
+        Func<IReadOnlyList<GuiSwitchOption>> read,
         TimeSpan timeout,
         string failureMessage,
-        Func<string, bool> ready)
-    {
-        var deadline = DateTimeOffset.UtcNow + timeout;
-        while (DateTimeOffset.UtcNow < deadline)
-        {
-            var value = read();
-            if (ready(value))
-            {
-                return value;
-            }
-            Thread.Sleep(100);
-        }
-        throw new TimeoutException($"{failureMessage} Last status: {read()}");
-    }
-
-    private static IReadOnlyList<string> WaitUntil(
-        Func<IReadOnlyList<string>> read,
-        TimeSpan timeout,
-        string failureMessage,
-        Func<IReadOnlyList<string>, bool> ready)
+        Func<IReadOnlyList<GuiSwitchOption>, bool> ready)
     {
         var deadline = DateTimeOffset.UtcNow + timeout;
         while (DateTimeOffset.UtcNow < deadline)

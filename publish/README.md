@@ -23,7 +23,7 @@ Double-clicking `AudioDeviceConfigurator.exe` (or running it with no arguments) 
 
 ## GUI workflow
 
-The window lists every active render endpoint discovered through Core Audio. Selecting an endpoint reloads its speaker-channel and Default Format items from the legacy Sound Control Panel. After Apply verifies a successful switch through `svcl.exe`, the GUI immediately loops `test_audio.wav` through the selected endpoint in WASAPI Shared Mode so you can hear whether the new format is in effect.
+The window lists every active render endpoint discovered through Core Audio. Selecting an endpoint reloads its speaker-channel and Default Format items from the legacy Sound Control Panel. Speaker Channels, Sample Rate, and Bit Depth are shown as switch groups; common values remain visible while unsupported values are disabled. Sample Rate and Bit Depth constrain each other using the exact pairs exposed by Control Panel, while the speaker-channel catalog remains independent. After Apply verifies a successful switch through `svcl.exe`, the GUI immediately loops `test_audio.wav` through the selected endpoint in WASAPI Shared Mode so you can hear whether the new format is in effect.
 
 - **Apply** is locked while a switch or playback is in progress.
 - **Play** is enabled only after a verified switch, and only when nothing is currently playing.

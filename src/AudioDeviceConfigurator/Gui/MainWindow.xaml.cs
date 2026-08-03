@@ -17,8 +17,6 @@ public partial class MainWindow : Window
         DataContext = viewModel;
         _viewModel = viewModel;
         EndpointCombo.ItemsSource = _viewModel.Endpoints;
-        ChannelCombo.ItemsSource = _viewModel.Channels;
-        FormatCombo.ItemsSource = _viewModel.Formats;
         Loaded += OnLoaded;
     }
 
@@ -51,22 +49,28 @@ public partial class MainWindow : Window
         }
     }
 
-    private void ChannelCombo_OnSelectionChanged(object sender, SelectionChangedEventArgs e)
+    private void ChannelOption_OnChecked(object sender, RoutedEventArgs e)
     {
-        if (ChannelCombo.SelectedIndex < 0)
+        if (sender is FrameworkElement { DataContext: NumericSwitchOption option })
         {
-            return;
+            _viewModel.SelectChannel(option.Value);
         }
-        _viewModel.SelectChannelIndex(ChannelCombo.SelectedIndex);
     }
 
-    private void FormatCombo_OnSelectionChanged(object sender, SelectionChangedEventArgs e)
+    private void SampleRateOption_OnChecked(object sender, RoutedEventArgs e)
     {
-        if (FormatCombo.SelectedIndex < 0)
+        if (sender is FrameworkElement { DataContext: NumericSwitchOption option })
         {
-            return;
+            _viewModel.SelectSampleRate(option.Value);
         }
-        _viewModel.SelectFormatIndex(FormatCombo.SelectedIndex);
+    }
+
+    private void BitDepthOption_OnChecked(object sender, RoutedEventArgs e)
+    {
+        if (sender is FrameworkElement { DataContext: NumericSwitchOption option })
+        {
+            _viewModel.SelectBitDepth(option.Value);
+        }
     }
 
     private async void ApplyButton_OnClick(object sender, RoutedEventArgs e)
