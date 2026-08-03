@@ -84,4 +84,4 @@ AudioDeviceConfigurator [options]
 - `--device-id` is passed unchanged to SVCL and probed with `/SaveDeviceFormat`; no fallback to another endpoint occurs.
 - Unparsed Control Panel text is displayed but cannot be selected for SVCL.
 - Reads and configures one endpoint per run.
-- GUI playback requires the endpoint's WASAPI mix format to match `test_audio.wav` exactly; mismatched endpoints surface an error and leave the verified audio settings in place.
+- GUI playback converts `test_audio.wav` to the selected endpoint's WASAPI mix format before playback.

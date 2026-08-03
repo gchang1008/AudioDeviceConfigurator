@@ -95,6 +95,21 @@ public sealed class MainWindowIntegrationTests : IDisposable
         _harness.Invoke(() => dataContext = window.DataContext);
         Assert.Same(_harness.ViewModel, dataContext);
 
+        foreach (var comboBox in new[]
+                 {
+                     _harness.EndpointCombo,
+                     _harness.ChannelCombo,
+                     _harness.FormatCombo,
+                 })
+        {
+            System.Windows.Data.BindingExpression? expression = null;
+            _harness.Invoke(() => expression = System.Windows.Data.BindingOperations.GetBindingExpression(
+                comboBox, UIElement.IsEnabledProperty));
+            Assert.NotNull(expression);
+            Assert.Equal(nameof(MainViewModel.CanChangeSelection), expression!.ParentBinding.Path.Path);
+            Assert.Same(_harness.ViewModel, expression.DataItem);
+        }
+
         System.Windows.Data.BindingExpression? applyExpression = null;
         _harness.Invoke(() => applyExpression = System.Windows.Data.BindingOperations.GetBindingExpression(
             _harness.ApplyButton, System.Windows.Controls.Button.IsEnabledProperty));

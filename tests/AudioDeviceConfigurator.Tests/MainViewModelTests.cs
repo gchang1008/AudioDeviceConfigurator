@@ -78,7 +78,12 @@ public sealed class MainViewModelTests
             .EnqueueSavedFormat(Format(2, 16, 44100, 0x3))
             .EnqueueSavedFormat(Format(2, 16, 44100, 0x3));
         bool busyDuringApply = false;
-        harness.Svcl.AfterSetSpeakers = () => busyDuringApply = vm.IsBusy;
+        bool selectionLockedDuringApply = false;
+        harness.Svcl.AfterSetSpeakers = () =>
+        {
+            busyDuringApply = vm.IsBusy;
+            selectionLockedDuringApply = !vm.CanChangeSelection;
+        };
 
         await vm.LoadEndpointsAsync(CancellationToken.None);
         await vm.EndpointChangedAsync(vm.Endpoints[0], CancellationToken.None);
@@ -88,7 +93,9 @@ public sealed class MainViewModelTests
         var result = await vm.ApplyAsync(CancellationToken.None);
 
         Assert.True(busyDuringApply);
+        Assert.True(selectionLockedDuringApply);
         Assert.False(vm.IsBusy);
+        Assert.True(vm.CanChangeSelection);
         Assert.Equal(SwitchStatus.Pass, result.Status);
         Assert.False(vm.CanPlay);
     }
@@ -199,7 +206,14 @@ public sealed class MainViewModelTests
 
         Assert.Equal(SwitchStatus.Pass, result.Status); // audio settings verified
         Assert.False(harness.Playback.IsPlaying);
+        Assert.True(vm.CanPlay);
         Assert.Contains("playback failed", vm.StatusMessage, StringComparison.OrdinalIgnoreCase);
+
+        harness.Playback.StartFailure = null;
+        vm.Play();
+
+        Assert.True(harness.Playback.IsPlaying);
+        Assert.False(vm.CanPlay);
     }
 
     [Fact]

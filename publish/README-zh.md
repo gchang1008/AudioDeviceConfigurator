@@ -89,4 +89,4 @@ $LASTEXITCODE
 - `--device-id` 會原樣傳給 SVCL，並先以 `/SaveDeviceFormat` 探測；失敗時不會改用其他裝置。
 - 無法解析的控制台格式文字仍會顯示，但不能送給 SVCL 套用。
 - 每次只讀取及設定一個播放裝置。
-- GUI 播放要求端點的 WASAPI mix format 與 `test_audio.wav` 完全一致；不一致時會顯示錯誤並保留已驗證的音訊設定。
+- GUI 播放前會將 `test_audio.wav` 轉換成所選端點的 WASAPI mix format。

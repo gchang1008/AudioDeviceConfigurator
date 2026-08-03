@@ -18,6 +18,7 @@
         <TextBlock Grid.Row="0" Text="Playback endpoint" Margin="0,0,0,4" />
         <ComboBox Grid.Row="1" x:Name="EndpointCombo"
                   AutomationProperties.AutomationId="EndpointCombo"
+                  IsEnabled="{Binding CanChangeSelection}"
                   DisplayMemberPath="FriendlyName"
                   SelectionChanged="EndpointCombo_OnSelectionChanged">
             <ComboBox.ItemContainerStyle>
@@ -31,6 +32,7 @@
         <TextBlock Grid.Row="2" Text="Speaker channels" Margin="0,8,0,4" />
         <ComboBox Grid.Row="3" x:Name="ChannelCombo"
                   AutomationProperties.AutomationId="ChannelCombo"
+                  IsEnabled="{Binding CanChangeSelection}"
                   SelectionChanged="ChannelCombo_OnSelectionChanged">
             <ComboBox.ItemTemplate>
                 <DataTemplate>
@@ -42,6 +44,7 @@
         <TextBlock Grid.Row="4" Text="Default format" Margin="0,8,0,4" />
         <ComboBox Grid.Row="5" x:Name="FormatCombo"
                   AutomationProperties.AutomationId="FormatCombo"
+                  IsEnabled="{Binding CanChangeSelection}"
                   DisplayMemberPath="DisplayText"
                   SelectionChanged="FormatCombo_OnSelectionChanged">
             <ComboBox.ItemContainerStyle>

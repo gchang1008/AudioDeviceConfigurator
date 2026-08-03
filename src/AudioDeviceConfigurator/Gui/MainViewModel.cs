@@ -70,6 +70,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
                 OnPropertyChanged(nameof(CanApply));
                 OnPropertyChanged(nameof(CanPlay));
                 OnPropertyChanged(nameof(CanStop));
+                OnPropertyChanged(nameof(CanChangeSelection));
             }
         }
     }
@@ -86,6 +87,8 @@ public sealed class MainViewModel : INotifyPropertyChanged
         && HasVerifiedSwitch;
 
     public bool CanStop => _playback.IsPlaying;
+
+    public bool CanChangeSelection => !IsBusy;
 
     private bool HasVerifiedSwitch
     {
@@ -203,26 +206,23 @@ public sealed class MainViewModel : INotifyPropertyChanged
 
         _dispatch(() => ApplyStatusMessage(result));
 
+        if (result.Status == SwitchStatus.Pass)
+        {
+            _dispatch(() => HasVerifiedSwitch = true);
+        }
+
         if (result.Status == SwitchStatus.Pass && _resolveWaveSource is not null)
         {
             try
             {
                 var source = _resolveWaveSource(endpoint);
                 _playback.Start(endpoint, source);
-                _dispatch(() =>
-                {
-                    HasVerifiedSwitch = true;
-                    StatusMessage = "Switch verified; playing test audio.";
-                });
+                _dispatch(() => StatusMessage = "Switch verified; playing test audio.");
             }
             catch (Exception ex)
             {
                 _dispatch(() => StatusMessage = $"Switch verified, but playback failed: {ex.Message}");
             }
-        }
-        else if (result.Status == SwitchStatus.Pass)
-        {
-            _dispatch(() => HasVerifiedSwitch = true);
         }
 
         return result;
