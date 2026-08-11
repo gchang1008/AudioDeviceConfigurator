@@ -29,6 +29,7 @@ AudioDeviceConfigurator 會讀取指定 Windows 播放裝置在傳統「聲音�
 - **Sample Rate** 只列出 32 kHz 至 192 kHz 之間的標準值（32、44.1、48、88.2、96、176.4、192 kHz）。
 - Sample Rate 與 Bit Depth 依控制台實際列出的精確組合互相限制；若選了某個取樣率但沒有對應的位元深度（反之亦然），會自動清空另一側的選取。聲道清單維持獨立。
 - 右下角的 **Active** 區塊即時顯示裝置目前的聲道／取樣率／位元深度。選擇裝置後就會自動載入，每次 **Apply**（或再次 Apply）驗證成功後也會更新。
+- GUI 開啟期間會依 Core Audio 熱插拔通知更新 Endpoint 清單；其他 Endpoint 的變動不會中斷目前選擇或播放。若播放中的目前 Endpoint 被拔除，循環播放會進入 default-follow 模式並改由 Windows 當前預設 Endpoint 接手；之後預設裝置再次改變時，播放也會自動轉移，但清單仍維持未選取。過期的 Switch 選項會清除，不掃描預設 Endpoint 的能力，而 **Active** 會持續顯示其 SVCL 當前格式。清單未選取時，**Play** 會使用目前預設 Endpoint，播放期間 **Stop** 仍可使用。若沒有可用的預設 Endpoint，則停止播放並清除 Active。
 - **Apply** 在切換進行中會鎖定，但播放中仍可使用。播放中按下 **Apply** 會先停止目前 WASAPI 串流，再套用新格式；驗證成功後會自動以新格式開始播放。
 - **Play** 只有在切換驗證成功且未播放時才會啟用。播放中改變任一 RadioButton 選擇時，**Apply** 仍維持啟用，所以可以直接按 Apply 套用新選擇，不需要先按 Stop。
 - **Stop** 會釋放 WASAPI 串流。

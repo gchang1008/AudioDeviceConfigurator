@@ -10,7 +10,9 @@ internal static class CoreAudio
     public static readonly Guid ClsidMMDeviceEnumerator = new("BCDE0395-E52F-467C-8E3D-C4579291692E");
 
     public const int EDataFlowRender = 0;
+    public const int EDataFlowCapture = 1;
     public const int ERoleConsole = 0;
+    public const int ERoleMultimedia = 1;
     public const int DeviceStateActive = 0x00000001;
     public const uint StgmRead = 0;
     public const int AudclntSharemodeShared = 0;
@@ -29,9 +31,41 @@ internal static class CoreAudio
 
         [PreserveSig] int GetDevice([MarshalAs(UnmanagedType.LPWStr)] string id, out IMMDevice device);
 
-        [PreserveSig] int RegisterEndpointNotificationCallback(IntPtr client);
+        [PreserveSig]
+        int RegisterEndpointNotificationCallback(
+            [MarshalAs(UnmanagedType.Interface)] IMMNotificationClient client);
 
-        [PreserveSig] int UnregisterEndpointNotificationCallback(IntPtr client);
+        [PreserveSig]
+        int UnregisterEndpointNotificationCallback(
+            [MarshalAs(UnmanagedType.Interface)] IMMNotificationClient client);
+    }
+
+    [ComVisible(true)]
+    [Guid("7991EEC9-7E89-4D85-8390-6C703CEC60C0")]
+    [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    public interface IMMNotificationClient
+    {
+        [PreserveSig]
+        int OnDeviceStateChanged(
+            [MarshalAs(UnmanagedType.LPWStr)] string deviceId,
+            int newState);
+
+        [PreserveSig]
+        int OnDeviceAdded([MarshalAs(UnmanagedType.LPWStr)] string deviceId);
+
+        [PreserveSig]
+        int OnDeviceRemoved([MarshalAs(UnmanagedType.LPWStr)] string deviceId);
+
+        [PreserveSig]
+        int OnDefaultDeviceChanged(
+            int flow,
+            int role,
+            [MarshalAs(UnmanagedType.LPWStr)] string? defaultDeviceId);
+
+        [PreserveSig]
+        int OnPropertyValueChanged(
+            [MarshalAs(UnmanagedType.LPWStr)] string deviceId,
+            PropertyKey key);
     }
 
     [ComImport]

@@ -6,10 +6,41 @@ namespace AudioDeviceConfigurator.Tests.Fakes;
 public sealed class FakeEndpointProvider : IAudioEndpointProvider
 {
     public List<EndpointInfo> Endpoints { get; } = [];
+    public int ReadCalls { get; private set; }
 
-    public IReadOnlyList<EndpointInfo> GetActiveRenderEndpoints() => Endpoints;
+    public IReadOnlyList<EndpointInfo> GetActiveRenderEndpoints()
+    {
+        ReadCalls++;
+        return Endpoints.ToArray();
+    }
 
     public EndpointInfo? GetDefaultRenderEndpoint() => Endpoints.FirstOrDefault(e => e.IsDefault);
+}
+
+public sealed class FakeEndpointChangeMonitor : IAudioEndpointChangeMonitor
+{
+    private EventHandler<AudioEndpointChange>? _changed;
+
+    public int SubscriberCount { get; private set; }
+    public int DisposeCalls { get; private set; }
+
+    public event EventHandler<AudioEndpointChange>? Changed
+    {
+        add
+        {
+            _changed += value;
+            SubscriberCount++;
+        }
+        remove
+        {
+            _changed -= value;
+            SubscriberCount--;
+        }
+    }
+
+    public void Raise(AudioEndpointChange change) => _changed?.Invoke(this, change);
+
+    public void Dispose() => DisposeCalls++;
 }
 
 public sealed class FakeControlPanelFormatProvider : IControlPanelFormatProvider

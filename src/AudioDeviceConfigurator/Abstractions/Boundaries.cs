@@ -96,6 +96,22 @@ public interface IAudioEndpointProvider
     EndpointInfo? GetDefaultRenderEndpoint();
 }
 
+public enum AudioEndpointChangeKind
+{
+    Added,
+    Removed,
+    StateChanged,
+    DefaultChanged,
+}
+
+public sealed record AudioEndpointChange(AudioEndpointChangeKind Kind, string? EndpointId);
+
+/// <summary>Publishes Core Audio render endpoint lifecycle changes.</summary>
+public interface IAudioEndpointChangeMonitor : IDisposable
+{
+    event EventHandler<AudioEndpointChange>? Changed;
+}
+
 public sealed record ProcessResult(int ExitCode, string StandardOutput, string StandardError);
 
 /// <summary>Runs the external SVCL process.</summary>

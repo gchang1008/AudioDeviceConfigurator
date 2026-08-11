@@ -421,6 +421,350 @@ public sealed class MainViewModelTests
         Assert.True(harness.Playback.StopCalls >= 1);
     }
 
+    [Fact]
+    public async Task RefreshEndpointsAsync_preserves_unaffected_selection_options_and_playback()
+    {
+        var vm = NewViewModel(out var harness);
+        SeedEndpoints(harness, "ep-1");
+        SeedOptions(harness, "ep-1", channels: new[] { 2 }, formats:
+        [
+            new ControlPanelFormatItem(0, "16 bit, 44100 Hz", 2, 44100, 16, 16, ControlPanelParseStatus.Parsed, null),
+        ]);
+        harness.Svcl
+            .EnqueueSavedFormat(Format(2, 16, 44100, 0x3))
+            .EnqueueSavedFormat(Format(2, 16, 44100, 0x3));
+        await vm.LoadEndpointsAsync(CancellationToken.None);
+        await vm.EndpointChangedAsync(vm.Endpoints[0], CancellationToken.None);
+        vm.SelectChannel(2);
+        vm.SelectSampleRate(44100);
+        vm.SelectBitDepth(16);
+        await vm.ApplyAsync(CancellationToken.None);
+        var stopCalls = harness.Playback.StopCalls;
+        var optionReads = harness.ControlPanel.EndpointIds.Count;
+
+        harness.Endpoints.Endpoints[0] = harness.Endpoints.Endpoints[0] with { IsDefault = false };
+        harness.Endpoints.Endpoints.Add(new EndpointInfo("ep-2", "ep-2", "ep-2", null, null, true));
+        await vm.RefreshEndpointsAsync(
+        [
+            new AudioEndpointChange(AudioEndpointChangeKind.Added, "ep-2"),
+            new AudioEndpointChange(AudioEndpointChangeKind.DefaultChanged, "ep-2"),
+        ], CancellationToken.None);
+
+        Assert.Equal(new[] { "ep-1", "ep-2" }, vm.Endpoints.Select(item => item.EndpointId));
+        Assert.Equal("ep-1", vm.SelectedEndpoint?.EndpointId);
+        Assert.False(vm.SelectedEndpoint?.IsDefault);
+        Assert.Equal(2, vm.SelectedChannel);
+        Assert.Equal(44100, vm.SelectedSampleRate);
+        Assert.Equal(16, vm.SelectedBitDepth);
+        Assert.True(harness.Playback.IsPlaying);
+        Assert.Equal(stopCalls, harness.Playback.StopCalls);
+        Assert.Equal(optionReads, harness.ControlPanel.EndpointIds.Count);
+    }
+
+    [Fact]
+    public async Task RefreshEndpointsAsync_clears_removed_selected_endpoint_and_stops_playback()
+    {
+        var vm = NewViewModel(out var harness);
+        SeedEndpoints(harness, "ep-1");
+        SeedOptions(harness, channels: new[] { 2 }, formats:
+        [
+            new ControlPanelFormatItem(0, "16 bit, 44100 Hz", 2, 44100, 16, 16, ControlPanelParseStatus.Parsed, null),
+        ]);
+        harness.Svcl
+            .EnqueueSavedFormat(Format(2, 16, 44100, 0x3))
+            .EnqueueSavedFormat(Format(2, 16, 44100, 0x3));
+        await vm.LoadEndpointsAsync(CancellationToken.None);
+        await vm.EndpointChangedAsync(vm.Endpoints[0], CancellationToken.None);
+        vm.SelectChannel(2);
+        vm.SelectSampleRate(44100);
+        vm.SelectBitDepth(16);
+        await vm.ApplyAsync(CancellationToken.None);
+
+        harness.Endpoints.Endpoints.Clear();
+        await vm.RefreshEndpointsAsync(
+            [new AudioEndpointChange(AudioEndpointChangeKind.Removed, "ep-1")],
+            CancellationToken.None);
+
+        Assert.Empty(vm.Endpoints);
+        Assert.Null(vm.SelectedEndpoint);
+        Assert.Null(vm.SelectedEndpointOptions);
+        Assert.Null(vm.SelectedChannel);
+        Assert.Null(vm.SelectedSampleRate);
+        Assert.Null(vm.SelectedBitDepth);
+        Assert.Null(vm.ActiveChannel);
+        Assert.False(harness.Playback.IsPlaying);
+        Assert.False(vm.CanApply);
+        Assert.False(vm.CanPlay);
+        Assert.All(vm.ChannelOptions, option => Assert.False(option.IsEnabled));
+    }
+
+    [Fact]
+    public async Task RefreshEndpointsAsync_reloads_an_affected_endpoint_that_is_still_active()
+    {
+        var vm = NewViewModel(out var harness);
+        SeedEndpoints(harness, "ep-1");
+        SeedOptions(harness, "ep-1", channels: new[] { 2 }, formats:
+        [
+            new ControlPanelFormatItem(0, "16 bit, 44100 Hz", 2, 44100, 16, 16, ControlPanelParseStatus.Parsed, null),
+        ]);
+        await vm.LoadEndpointsAsync(CancellationToken.None);
+        await vm.EndpointChangedAsync(vm.Endpoints[0], CancellationToken.None);
+
+        SeedOptions(harness, "ep-1", channels: new[] { 4 }, formats:
+        [
+            new ControlPanelFormatItem(0, "24 bit, 48000 Hz", 4, 48000, 24, 32, ControlPanelParseStatus.Parsed, null),
+        ]);
+        harness.Svcl.EnqueueSavedFormat(Format(4, 24, 48000, 0x33));
+        await vm.RefreshEndpointsAsync(
+            [new AudioEndpointChange(AudioEndpointChangeKind.StateChanged, "EP-1")],
+            CancellationToken.None);
+
+        Assert.Equal("ep-1", vm.SelectedEndpoint?.EndpointId);
+        Assert.Equal(new[] { 4 }, vm.Channels);
+        Assert.Equal(4, vm.ActiveChannel);
+        Assert.Equal(48000, vm.ActiveSampleRate);
+        Assert.Equal(24, vm.ActiveBitDepth);
+        Assert.Null(vm.SelectedChannel);
+        Assert.Equal(2, harness.ControlPanel.EndpointIds.Count);
+    }
+
+    [Fact]
+    public async Task RefreshEndpointsAsync_moves_active_playback_to_default_without_loading_options()
+    {
+        var vm = NewViewModel(out var harness);
+        harness.Endpoints.Endpoints.Add(new EndpointInfo("ep-selected", "Selected", "Selected", null, null, false));
+        harness.Endpoints.Endpoints.Add(new EndpointInfo("ep-default", "Default", "Default", null, null, true));
+        SeedOptions(harness, "ep-selected", channels: new[] { 2 }, formats:
+        [
+            new ControlPanelFormatItem(0, "16 bit, 44100 Hz", 2, 44100, 16, 16, ControlPanelParseStatus.Parsed, null),
+        ]);
+        harness.Svcl
+            .EnqueueSavedFormat(Format(2, 16, 44100, 0x3))
+            .EnqueueSavedFormat(Format(2, 16, 44100, 0x3))
+            .EnqueueSavedFormat(Format(2, 24, 48000, 0x3));
+        await vm.LoadEndpointsAsync(CancellationToken.None);
+        await vm.EndpointChangedAsync(vm.Endpoints[0], CancellationToken.None);
+        vm.SelectChannel(2);
+        vm.SelectSampleRate(44100);
+        vm.SelectBitDepth(16);
+        await vm.ApplyAsync(CancellationToken.None);
+        var optionReads = harness.ControlPanel.EndpointIds.Count;
+
+        harness.Endpoints.Endpoints.RemoveAt(0);
+        await vm.RefreshEndpointsAsync(
+            [new AudioEndpointChange(AudioEndpointChangeKind.Removed, "ep-selected")],
+            CancellationToken.None);
+
+        Assert.Null(vm.SelectedEndpoint);
+        Assert.Null(vm.SelectedEndpointOptions);
+        Assert.True(harness.Playback.IsPlaying);
+        Assert.Equal("ep-default", harness.Playback.LastEndpoint);
+        Assert.Equal(2, harness.Playback.StartCalls);
+        Assert.Equal(2, vm.ActiveChannel);
+        Assert.Equal(48000, vm.ActiveSampleRate);
+        Assert.Equal(24, vm.ActiveBitDepth);
+        Assert.Equal(optionReads, harness.ControlPanel.EndpointIds.Count);
+        Assert.False(vm.CanApply);
+        Assert.All(vm.ChannelOptions, option => Assert.False(option.IsEnabled));
+    }
+
+    [Fact]
+    public async Task RefreshEndpointsAsync_reads_default_active_format_without_starting_if_playback_was_stopped()
+    {
+        var vm = NewViewModel(out var harness);
+        harness.Endpoints.Endpoints.Add(new EndpointInfo("ep-selected", "Selected", "Selected", null, null, false));
+        harness.Endpoints.Endpoints.Add(new EndpointInfo("ep-default", "Default", "Default", null, null, true));
+        SeedOptions(harness, "ep-selected", channels: new[] { 2 }, formats:
+        [
+            new ControlPanelFormatItem(0, "16 bit, 44100 Hz", 2, 44100, 16, 16, ControlPanelParseStatus.Parsed, null),
+        ]);
+        harness.Svcl
+            .EnqueueSavedFormat(Format(2, 16, 44100, 0x3))
+            .EnqueueSavedFormat(Format(2, 16, 44100, 0x3))
+            .EnqueueSavedFormat(Format(6, 24, 96000, 0x3f));
+        await vm.LoadEndpointsAsync(CancellationToken.None);
+        await vm.EndpointChangedAsync(vm.Endpoints[0], CancellationToken.None);
+        vm.SelectChannel(2);
+        vm.SelectSampleRate(44100);
+        vm.SelectBitDepth(16);
+        await vm.ApplyAsync(CancellationToken.None);
+        vm.StopPlayback();
+        var optionReads = harness.ControlPanel.EndpointIds.Count;
+
+        harness.Endpoints.Endpoints.RemoveAt(0);
+        await vm.RefreshEndpointsAsync(
+            [new AudioEndpointChange(AudioEndpointChangeKind.Removed, "ep-selected")],
+            CancellationToken.None);
+
+        Assert.Null(vm.SelectedEndpoint);
+        Assert.False(harness.Playback.IsPlaying);
+        Assert.Equal(1, harness.Playback.StartCalls);
+        Assert.Equal(6, vm.ActiveChannel);
+        Assert.Equal(96000, vm.ActiveSampleRate);
+        Assert.Equal(24, vm.ActiveBitDepth);
+        Assert.Equal(optionReads, harness.ControlPanel.EndpointIds.Count);
+    }
+
+    [Fact]
+    public async Task RefreshEndpointsAsync_reports_default_playback_failure_but_still_reads_active_format()
+    {
+        var vm = NewViewModel(out var harness);
+        harness.Endpoints.Endpoints.Add(new EndpointInfo("ep-selected", "Selected", "Selected", null, null, false));
+        harness.Endpoints.Endpoints.Add(new EndpointInfo("ep-default", "Default", "Default", null, null, true));
+        SeedOptions(harness, "ep-selected", channels: new[] { 2 }, formats:
+        [
+            new ControlPanelFormatItem(0, "16 bit, 44100 Hz", 2, 44100, 16, 16, ControlPanelParseStatus.Parsed, null),
+        ]);
+        harness.Svcl
+            .EnqueueSavedFormat(Format(2, 16, 44100, 0x3))
+            .EnqueueSavedFormat(Format(2, 16, 44100, 0x3))
+            .EnqueueSavedFormat(Format(2, 24, 48000, 0x3));
+        await vm.LoadEndpointsAsync(CancellationToken.None);
+        await vm.EndpointChangedAsync(vm.Endpoints[0], CancellationToken.None);
+        vm.SelectChannel(2);
+        vm.SelectSampleRate(44100);
+        vm.SelectBitDepth(16);
+        await vm.ApplyAsync(CancellationToken.None);
+        harness.Playback.StartFailure = new InvalidOperationException("default unavailable");
+
+        harness.Endpoints.Endpoints.RemoveAt(0);
+        await vm.RefreshEndpointsAsync(
+            [new AudioEndpointChange(AudioEndpointChangeKind.Removed, "ep-selected")],
+            CancellationToken.None);
+
+        Assert.False(harness.Playback.IsPlaying);
+        Assert.Equal(2, vm.ActiveChannel);
+        Assert.Equal(48000, vm.ActiveSampleRate);
+        Assert.Equal(24, vm.ActiveBitDepth);
+        Assert.Contains("default playback failed", vm.StatusMessage, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task RefreshEndpointsAsync_preserves_playback_intent_when_render_fails_before_device_notification()
+    {
+        var vm = NewViewModel(out var harness);
+        harness.Endpoints.Endpoints.Add(new EndpointInfo("ep-selected", "Selected", "Selected", null, null, false));
+        harness.Endpoints.Endpoints.Add(new EndpointInfo("ep-default", "Default", "Default", null, null, true));
+        SeedOptions(harness, "ep-selected", channels: new[] { 2 }, formats:
+        [
+            new ControlPanelFormatItem(0, "16 bit, 44100 Hz", 2, 44100, 16, 16, ControlPanelParseStatus.Parsed, null),
+        ]);
+        harness.Svcl
+            .EnqueueSavedFormat(Format(2, 16, 44100, 0x3))
+            .EnqueueSavedFormat(Format(2, 16, 44100, 0x3))
+            .EnqueueSavedFormat(Format(2, 24, 48000, 0x3));
+        await vm.LoadEndpointsAsync(CancellationToken.None);
+        await vm.EndpointChangedAsync(vm.Endpoints[0], CancellationToken.None);
+        vm.SelectChannel(2);
+        vm.SelectSampleRate(44100);
+        vm.SelectBitDepth(16);
+        await vm.ApplyAsync(CancellationToken.None);
+
+        harness.Playback.Fail(new InvalidOperationException("device invalidated"));
+        Assert.False(harness.Playback.IsPlaying);
+        harness.Endpoints.Endpoints.RemoveAt(0);
+        await vm.RefreshEndpointsAsync(
+            [new AudioEndpointChange(AudioEndpointChangeKind.Removed, "ep-selected")],
+            CancellationToken.None);
+
+        Assert.True(harness.Playback.IsPlaying);
+        Assert.Equal("ep-default", harness.Playback.LastEndpoint);
+        Assert.Equal(2, harness.Playback.StartCalls);
+        Assert.Contains("playing on default endpoint", vm.StatusMessage, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task RefreshEndpointsAsync_moves_default_follow_playback_when_original_default_returns()
+    {
+        var vm = NewViewModel(out var harness);
+        harness.Endpoints.Endpoints.Add(new EndpointInfo("external", "External", "External", null, null, true));
+        harness.Endpoints.Endpoints.Add(new EndpointInfo("laptop", "Laptop", "Laptop", null, null, false));
+        SeedOptions(harness, "external", channels: new[] { 2 }, formats:
+        [
+            new ControlPanelFormatItem(0, "16 bit, 44100 Hz", 2, 44100, 16, 16, ControlPanelParseStatus.Parsed, null),
+        ]);
+        harness.Svcl
+            .EnqueueSavedFormat(Format(2, 16, 44100, 0x3))
+            .EnqueueSavedFormat(Format(2, 16, 44100, 0x3))
+            .EnqueueSavedFormat(Format(2, 24, 48000, 0x3))
+            .EnqueueSavedFormat(Format(2, 24, 96000, 0x3));
+        await vm.LoadEndpointsAsync(CancellationToken.None);
+        await vm.EndpointChangedAsync(vm.Endpoints[0], CancellationToken.None);
+        vm.SelectChannel(2);
+        vm.SelectSampleRate(44100);
+        vm.SelectBitDepth(16);
+        await vm.ApplyAsync(CancellationToken.None);
+
+        harness.Endpoints.Endpoints.RemoveAt(0);
+        harness.Endpoints.Endpoints[0] = harness.Endpoints.Endpoints[0] with { IsDefault = true };
+        await vm.RefreshEndpointsAsync(
+            [new AudioEndpointChange(AudioEndpointChangeKind.Removed, "external")],
+            CancellationToken.None);
+        Assert.Equal("laptop", harness.Playback.LastEndpoint);
+
+        harness.Endpoints.Endpoints[0] = harness.Endpoints.Endpoints[0] with { IsDefault = false };
+        harness.Endpoints.Endpoints.Add(new EndpointInfo("external", "External", "External", null, null, true));
+        await vm.RefreshEndpointsAsync(
+        [
+            new AudioEndpointChange(AudioEndpointChangeKind.Added, "external"),
+            new AudioEndpointChange(AudioEndpointChangeKind.DefaultChanged, "external"),
+        ], CancellationToken.None);
+
+        Assert.Null(vm.SelectedEndpoint);
+        Assert.True(harness.Playback.IsPlaying);
+        Assert.Equal("external", harness.Playback.LastEndpoint);
+        Assert.Equal(3, harness.Playback.StartCalls);
+        Assert.Equal(96000, vm.ActiveSampleRate);
+        Assert.False(vm.CanApply);
+    }
+
+    [Fact]
+    public async Task Play_and_Stop_use_default_endpoint_when_no_endpoint_is_selected()
+    {
+        var vm = NewViewModel(out var harness);
+        harness.Endpoints.Endpoints.Add(new EndpointInfo("default", "Default", "Default", null, null, true));
+        await vm.LoadEndpointsAsync(CancellationToken.None);
+
+        Assert.True(vm.CanPlay);
+        vm.Play();
+
+        Assert.True(harness.Playback.IsPlaying);
+        Assert.Equal("default", harness.Playback.LastEndpoint);
+        Assert.True(vm.CanStop);
+        Assert.False(vm.CanPlay);
+
+        vm.StopPlayback();
+
+        Assert.False(harness.Playback.IsPlaying);
+        Assert.True(vm.CanPlay);
+        Assert.False(vm.CanStop);
+    }
+
+    [Fact]
+    public async Task Default_follow_updates_Active_without_resuming_after_Stop()
+    {
+        var vm = NewViewModel(out var harness);
+        harness.Endpoints.Endpoints.Add(new EndpointInfo("laptop", "Laptop", "Laptop", null, null, true));
+        await vm.LoadEndpointsAsync(CancellationToken.None);
+        vm.Play();
+        vm.StopPlayback();
+
+        harness.Endpoints.Endpoints[0] = harness.Endpoints.Endpoints[0] with { IsDefault = false };
+        harness.Endpoints.Endpoints.Add(new EndpointInfo("external", "External", "External", null, null, true));
+        harness.Svcl.EnqueueSavedFormat(Format(2, 24, 96000, 0x3));
+        await vm.RefreshEndpointsAsync(
+            [new AudioEndpointChange(AudioEndpointChangeKind.DefaultChanged, "external")],
+            CancellationToken.None);
+
+        Assert.Null(vm.SelectedEndpoint);
+        Assert.False(harness.Playback.IsPlaying);
+        Assert.Equal(1, harness.Playback.StartCalls);
+        Assert.Equal("laptop", harness.Playback.LastEndpoint);
+        Assert.Equal(96000, vm.ActiveSampleRate);
+        Assert.True(vm.CanPlay);
+        Assert.False(vm.CanStop);
+    }
+
     private static MainViewModel NewViewModel(out GuiHarness harness)
     {
         harness = new GuiHarness();
@@ -520,6 +864,12 @@ public sealed class MainViewModelTests
             LastEndpoint = endpoint.EndpointId;
             StartCalls++;
             IsPlaying = true;
+        }
+
+        public void Fail(Exception exception)
+        {
+            IsPlaying = false;
+            PlaybackFailed?.Invoke(exception);
         }
 
         public void Stop()

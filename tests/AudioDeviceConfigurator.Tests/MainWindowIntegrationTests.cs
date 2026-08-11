@@ -65,6 +65,7 @@ public sealed class MainWindowIntegrationTests : IDisposable
 
         await _harness.WaitForEndpointsAsync(TimeSpan.FromSeconds(5));
         await _harness.WaitForChannelsAsync(TimeSpan.FromSeconds(5));
+        await _harness.WaitForActiveSettingsAsync(TimeSpan.FromSeconds(5));
 
         // Before Apply: Active region already reflects the device's current format
         // (loaded by LoadActiveSettingsAsync right after EndpointChangedAsync).
@@ -196,6 +197,107 @@ public sealed class MainWindowIntegrationTests : IDisposable
         Assert.Equal(7, vm.SampleRateOptions.Count);
         Assert.Equal(4, vm.BitDepthOptions.Count);
         await Task.CompletedTask;
+    }
+
+    [Fact]
+    public async Task Endpoint_notifications_from_a_background_thread_are_debounced_and_refreshed_on_the_dispatcher()
+    {
+        _harness.SeedEndpoint("ep-1", isDefault: true);
+        _harness.SeedOptions("ep-1", channels: new[] { 2 }, formats:
+        [
+            new ControlPanelFormatItem(0, "16 bit, 44100 Hz", 2, 44100, 16, 16, ControlPanelParseStatus.Parsed, null),
+        ]);
+        await _harness.Window!.Dispatcher.InvokeAsync(async () =>
+        {
+            await _harness.ViewModel.LoadEndpointsAsync(CancellationToken.None);
+            await _harness.ViewModel.EndpointChangedAsync(_harness.ViewModel.Endpoints[0], CancellationToken.None);
+        }).Task.Unwrap();
+        var reads = _harness.Endpoints.ReadCalls;
+        _harness.SeedEndpoint("ep-2", isDefault: false);
+
+        await Task.Run(() =>
+        {
+            _harness.EndpointChanges.Raise(new AudioEndpointChange(AudioEndpointChangeKind.Added, "ep-2"));
+            _harness.EndpointChanges.Raise(new AudioEndpointChange(AudioEndpointChangeKind.StateChanged, "ep-2"));
+            _harness.EndpointChanges.Raise(new AudioEndpointChange(AudioEndpointChangeKind.DefaultChanged, "ep-1"));
+        });
+
+        await WaitUntilAsync(
+            () => _harness.ViewModel.Endpoints.Count == 2,
+            TimeSpan.FromSeconds(5));
+        await Task.Delay(500);
+
+        Assert.Equal(reads + 1, _harness.Endpoints.ReadCalls);
+        Assert.Equal("ep-1", _harness.ViewModel.SelectedEndpoint?.EndpointId);
+        Assert.Equal(1, _harness.EndpointChanges.SubscriberCount);
+    }
+
+    [Fact]
+    public async Task Endpoint_refresh_waits_until_option_loading_is_no_longer_busy()
+    {
+        await WaitUntilAsync(
+            () => _harness.ViewModel.StatusMessage == "No active render endpoints found.",
+            TimeSpan.FromSeconds(2));
+        _harness.SeedEndpoint("ep-1", isDefault: true);
+        await _harness.Window!.Dispatcher.InvokeAsync(
+            () => _harness.ViewModel.LoadEndpointsAsync(CancellationToken.None)).Task.Unwrap();
+        using var entered = new ManualResetEventSlim();
+        using var release = new ManualResetEventSlim();
+        _harness.ControlPanel.Provider = (_, _) =>
+        {
+            entered.Set();
+            release.Wait(TimeSpan.FromSeconds(5));
+            return new ControlPanelFormatResult(
+                [new ControlPanelFormatItem(0, "16 bit, 44100 Hz", 2, 44100, 16, 16, ControlPanelParseStatus.Parsed, null)],
+                [new ControlPanelSpeakerConfigurationItem(0, "2 channels", 2)],
+                2,
+                new ControlPanelFormatSnapshot(DateTimeOffset.MinValue, DateTimeOffset.MinValue, "fake", true, true, null));
+        };
+
+        var optionLoad = _harness.Window.Dispatcher.InvokeAsync(async () =>
+            await _harness.ViewModel.EndpointChangedAsync(
+                _harness.ViewModel.Endpoints[0], CancellationToken.None)).Task.Unwrap();
+        Assert.True(entered.Wait(TimeSpan.FromSeconds(2)));
+        _harness.SeedEndpoint("ep-2", isDefault: false);
+        _harness.EndpointChanges.Raise(
+            new AudioEndpointChange(AudioEndpointChangeKind.Added, "ep-2"));
+
+        await Task.Delay(600);
+        Assert.Single(_harness.ViewModel.Endpoints);
+
+        release.Set();
+        await optionLoad;
+        await WaitUntilAsync(
+            () => _harness.ViewModel.Endpoints.Count == 2,
+            TimeSpan.FromSeconds(5));
+    }
+
+    [Fact]
+    public async Task Closing_window_unsubscribes_from_endpoint_notifications()
+    {
+        await WaitUntilAsync(
+            () => _harness.EndpointChanges.SubscriberCount == 1
+                && _harness.ViewModel.StatusMessage == "No active render endpoints found.",
+            TimeSpan.FromSeconds(2));
+        var reads = _harness.Endpoints.ReadCalls;
+
+        _harness.Invoke(() => _harness.Window!.Close());
+        _harness.EndpointChanges.Raise(
+            new AudioEndpointChange(AudioEndpointChangeKind.Added, "ep-after-close"));
+        await Task.Delay(500);
+
+        Assert.Equal(0, _harness.EndpointChanges.SubscriberCount);
+        Assert.Equal(reads, _harness.Endpoints.ReadCalls);
+    }
+
+    private static async Task WaitUntilAsync(Func<bool> condition, TimeSpan timeout)
+    {
+        var deadline = DateTimeOffset.UtcNow + timeout;
+        while (!condition() && DateTimeOffset.UtcNow < deadline)
+        {
+            await Task.Delay(25);
+        }
+        Assert.True(condition());
     }
 
     private string? EndpointCombo_SelectedEndpointId()
@@ -442,6 +544,7 @@ public sealed class MainWindowIntegrationTests : IDisposable
         public FakeControlPanelFormatProvider ControlPanel { get; } = new();
         public FakeSvclClient Svcl { get; } = new();
         public FakePlaybackService Playback { get; } = new();
+        public FakeEndpointChangeMonitor EndpointChanges { get; } = new();
         public MainWindow? Window { get; set; }
         public MainViewModel ViewModel { get; set; } = null!;
         public ComboBox EndpointCombo { get; set; } = null!;
@@ -463,7 +566,7 @@ public sealed class MainWindowIntegrationTests : IDisposable
                 createCancellation: null,
                 resolveWaveSource: _ => new WaveSource(new WaveFormat(48000, 2, 16, 4), new byte[48000]),
                 dispatcher: action => action());
-            var window = new MainWindow(ViewModel);
+            var window = new MainWindow(ViewModel, EndpointChanges);
             EndpointCombo = (ComboBox)window.FindName("EndpointCombo")!;
             ChannelsSwitchGroup = (ItemsControl)window.FindName("ChannelsSwitchGroup")!;
             SampleRateSwitchGroup = (ItemsControl)window.FindName("SampleRateSwitchGroup")!;
@@ -545,6 +648,22 @@ public sealed class MainWindowIntegrationTests : IDisposable
             {
                 throw new TimeoutException("Channels were never loaded for the selected endpoint.");
             }
+        }
+
+        public async Task WaitForActiveSettingsAsync(TimeSpan timeout)
+        {
+            var deadline = DateTimeOffset.UtcNow + timeout;
+            while (ViewModel.ActiveChannel is null && DateTimeOffset.UtcNow < deadline)
+            {
+                await Task.Delay(25);
+            }
+            if (ViewModel.ActiveChannel is null)
+            {
+                throw new TimeoutException("Active settings were never loaded for the selected endpoint.");
+            }
+            await Window!.Dispatcher.InvokeAsync(
+                () => { },
+                System.Windows.Threading.DispatcherPriority.ContextIdle);
         }
 
         public async Task WaitForApplyEnabledAsync(TimeSpan timeout)

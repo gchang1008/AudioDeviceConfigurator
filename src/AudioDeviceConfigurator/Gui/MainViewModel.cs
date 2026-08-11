@@ -20,6 +20,10 @@ public sealed class MainViewModel : INotifyPropertyChanged
     private readonly Action<Action> _dispatch;
     private readonly HashSet<(int SampleRate, int BitDepth)> _formatPairs = new();
     private CancellationTokenSource? _applyCancellation;
+    private string? _requestedPlaybackEndpointId;
+    private EndpointInfo? _defaultEndpoint;
+    private bool _followDefaultEndpoint;
+    private bool _defaultPlaybackRequested;
 
     private static readonly int[] CommonChannels = [2, 4, 6, 8];
     private static readonly int[] CommonSampleRates =
@@ -126,10 +130,10 @@ public sealed class MainViewModel : INotifyPropertyChanged
         && _formatPairs.Contains((SelectedSampleRate.Value, SelectedBitDepth.Value))
         && !IsBusy;
 
-    public bool CanPlay => SelectedEndpoint is not null
-        && !IsBusy
+    public bool CanPlay => !IsBusy
         && !_playback.IsPlaying
-        && HasVerifiedSwitch;
+        && (SelectedEndpoint is not null && HasVerifiedSwitch
+            || SelectedEndpoint is null && _defaultEndpoint is not null);
 
     public bool CanStop => _playback.IsPlaying;
 
@@ -165,10 +169,145 @@ public sealed class MainViewModel : INotifyPropertyChanged
             {
                 Endpoints.Add(endpoint);
             }
+            SetDefaultEndpoint(endpoints.FirstOrDefault(endpoint => endpoint.IsDefault));
             StatusMessage = endpoints.Count == 0
                 ? "No active render endpoints found."
                 : "Select an endpoint to load its options.";
         });
+    }
+
+    public async Task RefreshEndpointsAsync(
+        IReadOnlyCollection<AudioEndpointChange> changes,
+        CancellationToken cancellationToken)
+    {
+        var selectedId = SelectedEndpoint?.EndpointId;
+        var endpoints = await _service.ListEndpointsAsync(cancellationToken);
+        var refreshedSelection = selectedId is null
+            ? null
+            : endpoints.FirstOrDefault(endpoint =>
+                string.Equals(endpoint.EndpointId, selectedId, StringComparison.OrdinalIgnoreCase));
+        var selectedEndpointChanged = selectedId is not null
+            && (refreshedSelection is null || changes.Any(change =>
+                (change.Kind is AudioEndpointChangeKind.Added
+                    or AudioEndpointChangeKind.Removed
+                    or AudioEndpointChangeKind.StateChanged)
+                && string.Equals(change.EndpointId, selectedId, StringComparison.OrdinalIgnoreCase)));
+
+        _dispatch(() =>
+        {
+            Endpoints.Clear();
+            foreach (var endpoint in endpoints)
+            {
+                Endpoints.Add(endpoint);
+            }
+            SetDefaultEndpoint(endpoints.FirstOrDefault(endpoint => endpoint.IsDefault));
+
+            if (selectedId is null)
+            {
+                StatusMessage = endpoints.Count == 0
+                    ? "No active render endpoints found."
+                    : "Select an endpoint to load its options.";
+                return;
+            }
+
+            if (!selectedEndpointChanged)
+            {
+                SelectedEndpoint = refreshedSelection;
+                OnPropertyChanged(nameof(SelectedEndpoint));
+            }
+        });
+
+        if (selectedId is null)
+        {
+            if (_followDefaultEndpoint)
+            {
+                await RefreshDefaultEndpointAsync(cancellationToken);
+            }
+            return;
+        }
+
+        if (!selectedEndpointChanged)
+        {
+            return;
+        }
+
+        var continuePlayback = selectedId is not null
+            && string.Equals(
+                _requestedPlaybackEndpointId,
+                selectedId,
+                StringComparison.OrdinalIgnoreCase);
+        _playback.Stop();
+        if (continuePlayback)
+        {
+            _requestedPlaybackEndpointId = null;
+        }
+        if (refreshedSelection is null)
+        {
+            _followDefaultEndpoint = true;
+            _defaultPlaybackRequested = continuePlayback;
+            _dispatch(() => ClearEndpointState(clearEndpoint: true));
+            await RefreshDefaultEndpointAsync(cancellationToken);
+            return;
+        }
+
+        await EndpointChangedAsync(refreshedSelection, cancellationToken);
+        await LoadActiveSettingsAsync(refreshedSelection, cancellationToken);
+    }
+
+    private async Task RefreshDefaultEndpointAsync(CancellationToken cancellationToken)
+    {
+        var defaultEndpoint = _defaultEndpoint;
+        if (defaultEndpoint is null)
+        {
+            _playback.Stop();
+            _requestedPlaybackEndpointId = null;
+            _dispatch(() =>
+            {
+                SetActiveSettings(null, null, null);
+                StatusMessage = "Selected endpoint disconnected; no default playback endpoint is available.";
+            });
+            return;
+        }
+
+        string status;
+        if (_defaultPlaybackRequested && _resolveWaveSource is not null)
+        {
+            if (!_playback.IsPlaying
+                || !string.Equals(
+                    _requestedPlaybackEndpointId,
+                    defaultEndpoint.EndpointId,
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                _requestedPlaybackEndpointId = null;
+                try
+                {
+                    var source = _resolveWaveSource(defaultEndpoint);
+                    _playback.Start(defaultEndpoint, source);
+                    _requestedPlaybackEndpointId = defaultEndpoint.EndpointId;
+                    status = $"Selected endpoint disconnected; playing on default endpoint '{defaultEndpoint.FriendlyName}'.";
+                }
+                catch (Exception ex)
+                {
+                    status = $"Selected endpoint disconnected; default playback failed: {ex.Message}";
+                }
+            }
+            else
+            {
+                status = $"Selected endpoint disconnected; playing on default endpoint '{defaultEndpoint.FriendlyName}'.";
+            }
+        }
+        else
+        {
+            status = "Selected endpoint disconnected; showing the default endpoint's active format.";
+        }
+
+        await LoadActiveSettingsAsync(defaultEndpoint, cancellationToken);
+        _dispatch(() => StatusMessage = status);
+    }
+
+    public void ReportEndpointRefreshFailure(string message)
+    {
+        StatusMessage = $"Failed to refresh endpoints: {message}";
     }
 
     public async Task LoadActiveSettingsAsync(EndpointInfo endpoint, CancellationToken cancellationToken)
@@ -194,6 +333,8 @@ public sealed class MainViewModel : INotifyPropertyChanged
 
     public async Task EndpointChangedAsync(EndpointInfo endpoint, CancellationToken cancellationToken)
     {
+        _followDefaultEndpoint = false;
+        _defaultPlaybackRequested = false;
         SelectedEndpoint = endpoint;
         OnPropertyChanged(nameof(SelectedEndpoint));
         OnPropertyChanged(nameof(CanApply));
@@ -326,6 +467,8 @@ public sealed class MainViewModel : INotifyPropertyChanged
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(
             cancellationToken, _applyCancellation.Token);
         // Stop any existing playback stream before swapping the endpoint's format.
+        _defaultPlaybackRequested = false;
+        _requestedPlaybackEndpointId = null;
         _playback.Stop();
         SetBusy(true);
         SwitchResult result;
@@ -360,6 +503,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
             {
                 var source = _resolveWaveSource(endpoint);
                 _playback.Start(endpoint, source);
+                _requestedPlaybackEndpointId = endpoint.EndpointId;
                 _dispatch(() => StatusMessage = "Switch verified; playing test audio.");
             }
             catch (Exception ex)
@@ -373,16 +517,33 @@ public sealed class MainViewModel : INotifyPropertyChanged
 
     public void Play()
     {
-        if (!CanPlay || SelectedEndpoint is null || _resolveWaveSource is null)
+        if (!CanPlay || _resolveWaveSource is null)
+        {
+            return;
+        }
+
+        var endpoint = SelectedEndpoint ?? _defaultEndpoint;
+        if (endpoint is null)
         {
             return;
         }
 
         try
         {
-            var source = _resolveWaveSource(SelectedEndpoint);
-            _playback.Start(SelectedEndpoint, source);
-            StatusMessage = "Playing test audio.";
+            var source = _resolveWaveSource(endpoint);
+            _playback.Start(endpoint, source);
+            _requestedPlaybackEndpointId = endpoint.EndpointId;
+            if (SelectedEndpoint is null)
+            {
+                _followDefaultEndpoint = true;
+                _defaultPlaybackRequested = true;
+                StatusMessage = $"Playing test audio on default endpoint '{endpoint.FriendlyName}'.";
+            }
+            else
+            {
+                _defaultPlaybackRequested = false;
+                StatusMessage = "Playing test audio.";
+            }
         }
         catch (Exception ex)
         {
@@ -392,6 +553,8 @@ public sealed class MainViewModel : INotifyPropertyChanged
 
     public void StopPlayback()
     {
+        _defaultPlaybackRequested = false;
+        _requestedPlaybackEndpointId = null;
         _playback.Stop();
     }
 
@@ -518,6 +681,38 @@ public sealed class MainViewModel : INotifyPropertyChanged
                 ? _formatPairs.Contains((sampleRate, option.Value))
                 : _formatPairs.Any(pair => pair.BitDepth == option.Value);
         }
+    }
+
+    private void SetDefaultEndpoint(EndpointInfo? endpoint)
+    {
+        _defaultEndpoint = endpoint;
+        OnPropertyChanged(nameof(CanPlay));
+    }
+
+    private void ClearEndpointState(bool clearEndpoint)
+    {
+        if (clearEndpoint)
+        {
+            SelectedEndpoint = null;
+            OnPropertyChanged(nameof(SelectedEndpoint));
+        }
+
+        SelectedEndpointOptions = null;
+        SelectedChannelIndex = null;
+        SelectedFormatIndex = null;
+        EndpointOptions.Clear();
+        Channels.Clear();
+        Formats.Clear();
+        _formatPairs.Clear();
+        HasVerifiedSwitch = false;
+        SetActiveSettings(null, null, null);
+        ClearSwitchSelection();
+        SeedCommonSwitchOptions();
+        OnPropertyChanged(nameof(SelectedEndpointOptions));
+        OnPropertyChanged(nameof(SelectedChannelIndex));
+        OnPropertyChanged(nameof(SelectedFormatIndex));
+        OnPropertyChanged(nameof(CanApply));
+        OnPropertyChanged(nameof(CanPlay));
     }
 
     private void ClearSwitchSelection()
