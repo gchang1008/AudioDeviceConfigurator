@@ -349,14 +349,21 @@ internal sealed class WasapiRenderStream : IDisposable
         {
             if (!WriteAvailableFrames())
             {
-                // _stop.Wait races with the WASAPI render event. When the
-                // audio engine signals a buffer slot, WriteAvailableFrames
-                // returns true on the next iteration. _stop.Wait also wakes
-                // us on Stop without blocking it for a full second.
-                if (_stop.Wait(TimeSpan.FromMilliseconds(200)))
+                // Wait on the WASAPI render event so the audio engine wakes
+                // us the moment a buffer slot is free. The 100 ms timeout
+                // bounds the latency of observing an external Stop request.
+                var signaled = WaitForSingleObject(_renderEventHandle, 100);
+                if (Volatile.Read(ref _disposed) != 0)
                 {
                     return;
                 }
+                if (signaled == WaitObject0 || signaled == WaitTimeout)
+                {
+                    continue;
+                }
+
+                throw new InvalidOperationException(
+                    $"WaitForSingleObject returned {signaled} (error {Marshal.GetLastWin32Error()}).");
             }
         }
     }
@@ -453,4 +460,7 @@ internal sealed class WasapiRenderStream : IDisposable
 
     [DllImport("kernel32.dll", SetLastError = true)]
     private static extern bool CloseHandle(IntPtr hObject);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern int WaitForSingleObject(IntPtr hHandle, int dwMilliseconds);
 }
