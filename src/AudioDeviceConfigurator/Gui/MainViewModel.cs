@@ -4,6 +4,7 @@ using System.Runtime.CompilerServices;
 using AudioDeviceConfigurator.Abstractions;
 using AudioDeviceConfigurator.Application;
 using AudioDeviceConfigurator.Audio;
+using AudioDeviceConfigurator.Domain;
 
 namespace AudioDeviceConfigurator.Gui;
 
@@ -132,27 +133,12 @@ public sealed class MainViewModel : INotifyPropertyChanged
 
     public bool CanPlay => !IsBusy
         && !_playback.IsPlaying
-        && (SelectedEndpoint is not null && HasVerifiedSwitch
-            || SelectedEndpoint is null && _defaultEndpoint is not null);
+        && (SelectedEndpoint is not null || _defaultEndpoint is not null);
 
     public bool CanStop => _playback.IsPlaying;
 
     public bool CanChangeSelection => !IsBusy;
 
-    private bool HasVerifiedSwitch
-    {
-        get => _hasVerifiedSwitch;
-        set
-        {
-            if (Set(ref _hasVerifiedSwitch, value))
-            {
-                OnPropertyChanged(nameof(CanApply));
-                OnPropertyChanged(nameof(CanPlay));
-            }
-        }
-    }
-
-    private bool _hasVerifiedSwitch;
     private int? _activeChannel;
     private int? _activeSampleRate;
     private int? _activeBitDepth;
@@ -327,6 +313,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
                     format.Channels,
                     format.SampleRate,
                     format.EffectiveBits);
+                SelectCurrentEndpointOptions(endpoint, format);
             }
         });
     }
@@ -493,7 +480,6 @@ public sealed class MainViewModel : INotifyPropertyChanged
             _dispatch(() =>
             {
                 SetActiveSettings(channel, SelectedSampleRate!.Value, SelectedBitDepth!.Value);
-                HasVerifiedSwitch = true;
             });
         }
 
@@ -581,7 +567,6 @@ public sealed class MainViewModel : INotifyPropertyChanged
         SelectedEndpointOptions = null;
         SelectedChannelIndex = null;
         SelectedFormatIndex = null;
-        HasVerifiedSwitch = false;
         OnPropertyChanged(nameof(SelectedEndpointOptions));
         OnPropertyChanged(nameof(SelectedChannelIndex));
         OnPropertyChanged(nameof(SelectedFormatIndex));
@@ -704,7 +689,6 @@ public sealed class MainViewModel : INotifyPropertyChanged
         Channels.Clear();
         Formats.Clear();
         _formatPairs.Clear();
-        HasVerifiedSwitch = false;
         SetActiveSettings(null, null, null);
         ClearSwitchSelection();
         SeedCommonSwitchOptions();
@@ -713,6 +697,32 @@ public sealed class MainViewModel : INotifyPropertyChanged
         OnPropertyChanged(nameof(SelectedFormatIndex));
         OnPropertyChanged(nameof(CanApply));
         OnPropertyChanged(nameof(CanPlay));
+    }
+
+    private void SelectCurrentEndpointOptions(EndpointInfo endpoint, SavedFormat format)
+    {
+        if (!string.Equals(
+                SelectedEndpoint?.EndpointId,
+                endpoint.EndpointId,
+                StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        ClearSwitchSelection();
+        RefreshFormatOptionState();
+
+        if (ChannelOptions.Any(option =>
+                option.Value == format.Channels && option.IsEnabled))
+        {
+            SelectChannel(format.Channels);
+        }
+
+        if (_formatPairs.Contains((format.SampleRate, format.EffectiveBits)))
+        {
+            SelectSampleRate(format.SampleRate);
+            SelectBitDepth(format.EffectiveBits);
+        }
     }
 
     private void ClearSwitchSelection()

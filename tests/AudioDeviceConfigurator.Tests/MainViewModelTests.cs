@@ -77,6 +77,61 @@ public sealed class MainViewModelTests
     }
 
     [Fact]
+    public async Task LoadActiveSettingsAsync_selects_exact_current_endpoint_options_without_applying()
+    {
+        var vm = NewViewModel(out var harness);
+        SeedEndpoints(harness, "ep-1");
+        SeedOptions(harness, channels: new[] { 2, 4 }, formats: new[]
+        {
+            new ControlPanelFormatItem(0, "16 bit, 44100 Hz", 2, 44100, 16, 16, ControlPanelParseStatus.Parsed, null),
+            new ControlPanelFormatItem(1, "24 bit, 48000 Hz", 4, 48000, 24, 32, ControlPanelParseStatus.Parsed, null),
+        });
+        harness.Svcl.EnqueueSavedFormat(Format(4, 24, 48000, 0x33));
+
+        await vm.LoadEndpointsAsync(CancellationToken.None);
+        await vm.EndpointChangedAsync(vm.Endpoints[0], CancellationToken.None);
+        await vm.LoadActiveSettingsAsync(vm.Endpoints[0], CancellationToken.None);
+
+        Assert.Equal(4, vm.SelectedChannel);
+        Assert.Equal(48000, vm.SelectedSampleRate);
+        Assert.Equal(24, vm.SelectedBitDepth);
+        Assert.True(vm.ChannelOptions.Single(item => item.Value == 4).IsSelected);
+        Assert.True(vm.SampleRateOptions.Single(item => item.Value == 48000).IsSelected);
+        Assert.True(vm.BitDepthOptions.Single(item => item.Value == 24).IsSelected);
+        Assert.True(vm.CanApply);
+        Assert.False(harness.Playback.IsPlaying);
+        Assert.DoesNotContain(harness.Svcl.Operations, operation => operation.StartsWith("Set", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task LoadActiveSettingsAsync_leaves_unsupported_current_values_unselected()
+    {
+        var vm = NewViewModel(out var harness);
+        SeedEndpoints(harness, "ep-1");
+        SeedOptions(harness, channels: new[] { 2 }, formats: new[]
+        {
+            new ControlPanelFormatItem(0, "16 bit, 48000 Hz", 2, 48000, 16, 16, ControlPanelParseStatus.Parsed, null),
+            new ControlPanelFormatItem(1, "24 bit, 44100 Hz", 2, 44100, 24, 32, ControlPanelParseStatus.Parsed, null),
+        });
+        harness.Svcl.EnqueueSavedFormat(Format(6, 24, 48000, 0x3f));
+
+        await vm.LoadEndpointsAsync(CancellationToken.None);
+        await vm.EndpointChangedAsync(vm.Endpoints[0], CancellationToken.None);
+        await vm.LoadActiveSettingsAsync(vm.Endpoints[0], CancellationToken.None);
+
+        Assert.Equal(6, vm.ActiveChannel);
+        Assert.Equal(48000, vm.ActiveSampleRate);
+        Assert.Equal(24, vm.ActiveBitDepth);
+        Assert.Null(vm.SelectedChannel);
+        Assert.Null(vm.SelectedSampleRate);
+        Assert.Null(vm.SelectedBitDepth);
+        Assert.DoesNotContain(vm.ChannelOptions, option => option.IsSelected);
+        Assert.DoesNotContain(vm.SampleRateOptions, option => option.IsSelected);
+        Assert.DoesNotContain(vm.BitDepthOptions, option => option.IsSelected);
+        Assert.False(vm.CanApply);
+    }
+
+    [Fact]
     public async Task LoadActiveSettingsAsync_clears_when_service_returns_null()
     {
         var vm = NewViewModel(out var harness);
@@ -301,7 +356,7 @@ public sealed class MainViewModelTests
 
         Assert.Equal(SwitchStatus.FormatMismatch, result.Status);
         Assert.Contains("restored", vm.StatusMessage, StringComparison.OrdinalIgnoreCase);
-        Assert.False(vm.CanPlay);
+        Assert.True(vm.CanPlay);
     }
 
     [Fact]
@@ -524,7 +579,9 @@ public sealed class MainViewModelTests
         Assert.Equal(4, vm.ActiveChannel);
         Assert.Equal(48000, vm.ActiveSampleRate);
         Assert.Equal(24, vm.ActiveBitDepth);
-        Assert.Null(vm.SelectedChannel);
+        Assert.Equal(4, vm.SelectedChannel);
+        Assert.Equal(48000, vm.SelectedSampleRate);
+        Assert.Equal(24, vm.SelectedBitDepth);
         Assert.Equal(2, harness.ControlPanel.EndpointIds.Count);
     }
 

@@ -78,6 +78,12 @@ public sealed class MainWindowIntegrationTests : IDisposable
                 ((TextBlock?)FindByAutomationId("ActiveSampleRateText"))!.Text);
             Assert.Equal("Bit Depth: 16-bit",
                 ((TextBlock?)FindByAutomationId("ActiveBitDepthText"))!.Text);
+            Assert.True(Assert.IsType<RadioButton>(
+                FindByAutomationId("ChannelOption-2")).IsChecked);
+            Assert.True(Assert.IsType<RadioButton>(
+                FindByAutomationId("SampleRateOption-44100")).IsChecked);
+            Assert.True(Assert.IsType<RadioButton>(
+                FindByAutomationId("BitDepthOption-16")).IsChecked);
         });
 
         _harness.Invoke(() =>
@@ -169,7 +175,7 @@ public sealed class MainWindowIntegrationTests : IDisposable
     }
 
     [Fact]
-    public async Task Window_loads_default_endpoint_on_startup()
+    public async Task Window_loads_default_endpoint_and_enables_play_without_apply_on_startup()
     {
         _harness.SeedEndpoint("ep-other", isDefault: false);
         _harness.SeedEndpoint("ep-default", isDefault: true);
@@ -184,7 +190,11 @@ public sealed class MainWindowIntegrationTests : IDisposable
         _harness.Invoke(() =>
         {
             Assert.Equal("ep-default", EndpointCombo_SelectedEndpointId());
+            Assert.True(_harness.PlayButton.IsEnabled);
+            _harness.PlayButton.RaiseEvent(
+                new RoutedEventArgs(System.Windows.Controls.Primitives.ButtonBase.ClickEvent));
         });
+        await _harness.WaitForPlaybackStartedAsync(TimeSpan.FromSeconds(5));
     }
 
     [Fact]
@@ -466,7 +476,7 @@ public sealed class MainWindowIntegrationTests : IDisposable
         _harness.Invoke(() =>
         {
             Assert.True(_harness.ApplyButton.IsEnabled);
-            Assert.False(_harness.PlayButton.IsEnabled);
+            Assert.True(_harness.PlayButton.IsEnabled);
             Assert.False(_harness.StopButton.IsEnabled);
         });
     }

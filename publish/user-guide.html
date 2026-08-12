@@ -1,0 +1,546 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>AudioDeviceConfigurator — 使用說明</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&family=Noto+Sans+TC:wght@400;500;700&display=swap" rel="stylesheet" />
+<style>
+  /* ----- design tokens (light-only) ----- */
+  :root {
+    --bg: #FAFAF9;
+    --surface: #FFFFFF;
+    --surface-2: #F4F4F2;
+    --ink: #0F1419;
+    --ink-2: #2C333A;
+    --muted: #5C6770;
+    --muted-2: #8A949C;
+    --rule: #E4E6E7;
+    --rule-strong: #D2D5D7;
+    --accent: #0E7C66;
+    --accent-soft: #E7F2EF;
+    --accent-ink: #0A5C4B;
+    --warn: #B45309;
+    --warn-soft: #FEF3E2;
+    --danger: #B42318;
+    --danger-soft: #FEE4E2;
+    --code-bg: #11161B;
+    --code-ink: #E6E8E9;
+    --shadow-1: 0 1px 2px rgba(15, 20, 25, 0.04), 0 1px 1px rgba(15, 20, 25, 0.03);
+    --shadow-2: 0 6px 16px -8px rgba(15, 20, 25, 0.12), 0 2px 6px rgba(15, 20, 25, 0.04);
+    --shadow-3: 0 24px 48px -16px rgba(15, 20, 25, 0.18), 0 8px 16px rgba(15, 20, 25, 0.06);
+    --radius-sm: 4px;
+    --radius: 6px;
+    --radius-md: 10px;
+    --radius-lg: 14px;
+    --radius-pill: 999px;
+    --space-1: 4px;
+    --space-2: 8px;
+    --space-3: 12px;
+    --space-4: 16px;
+    --space-5: 24px;
+    --space-6: 32px;
+    --space-7: 48px;
+    --space-8: 64px;
+    --space-9: 96px;
+    --ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+    --t-fast: 160ms;
+    --t-med: 240ms;
+    --t-slow: 320ms;
+    --font-sans: "Inter", "Noto Sans TC", system-ui, -apple-system, sans-serif;
+    --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    /* light-only theme; dark scheme deliberately not honored */
+  }
+
+  /* ----- base ----- */
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--ink);
+    font-family: var(--font-sans);
+    font-size: 16px;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+    text-wrap: pretty;
+  }
+  ::selection { background: var(--accent-soft); color: var(--accent-ink); }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+
+  /* ----- layout ----- */
+  .wrap { max-width: 1080px; margin: 0 auto; padding: 0 var(--space-5); }
+  .nav {
+    position: sticky; top: 0; z-index: 10;
+    backdrop-filter: saturate(180%) blur(12px);
+    background: color-mix(in srgb, var(--bg) 80%, transparent);
+    border-bottom: 1px solid var(--rule);
+  }
+  .nav-inner { display: flex; align-items: center; gap: var(--space-5); height: 56px; }
+  .nav-brand { display: flex; align-items: center; gap: var(--space-2); font-weight: 600; }
+  .nav-brand .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 4px var(--accent-soft); }
+  .nav-links { display: flex; gap: var(--space-5); margin-left: auto; font-size: 14px; color: var(--muted); }
+  .nav-links a { color: var(--muted); }
+  .nav-links a:hover { color: var(--ink); text-decoration: none; }
+
+  /* ----- hero ----- */
+  .hero { padding: var(--space-9) 0 var(--space-7); }
+  .hero-eyebrow { display: inline-flex; align-items: center; gap: 8px; padding: 4px 10px; border: 1px solid var(--rule-strong); border-radius: var(--radius-pill); font-size: 12px; color: var(--muted); font-weight: 500; letter-spacing: 0.02em; }
+  .hero-eyebrow .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); }
+  .hero h1 { font-size: clamp(36px, 5vw, 56px); line-height: 1.05; letter-spacing: -0.03em; margin: var(--space-4) 0 var(--space-3); font-weight: 700; }
+  .hero p.lede { font-size: clamp(16px, 1.6vw, 19px); color: var(--muted); max-width: 64ch; margin: 0; }
+  .hero-cta { display: flex; gap: var(--space-3); margin-top: var(--space-6); flex-wrap: wrap; }
+  .btn { display: inline-flex; align-items: center; gap: 8px; padding: 10px 16px; border-radius: var(--radius); border: 1px solid transparent; font-weight: 500; font-size: 14px; transition: all var(--t-fast) var(--ease); cursor: pointer; }
+  .btn-primary { background: var(--ink); color: var(--bg); border-color: var(--ink); }
+  .btn-primary:hover { background: var(--ink-2); text-decoration: none; }
+  .btn-secondary { background: var(--surface); color: var(--ink); border-color: var(--rule-strong); }
+  .btn-secondary:hover { background: var(--surface-2); text-decoration: none; }
+  .btn .arrow { transition: transform var(--t-fast) var(--ease); }
+  .btn:hover .arrow { transform: translateX(2px); }
+  .hero-meta { margin-top: var(--space-7); display: flex; flex-wrap: wrap; gap: var(--space-5) var(--space-7); }
+  .hero-meta .item { font-size: 13px; color: var(--muted); }
+  .hero-meta .item b { color: var(--ink); font-weight: 600; }
+
+  /* ----- section ----- */
+  section { padding: var(--space-8) 0; border-top: 1px solid var(--rule); }
+  .section-head { display: flex; align-items: end; justify-content: space-between; gap: var(--space-5); margin-bottom: var(--space-6); flex-wrap: wrap; }
+  .section-head h2 { font-size: clamp(24px, 3vw, 32px); letter-spacing: -0.02em; margin: 0; font-weight: 700; }
+  .section-head .kicker { font-family: var(--font-mono); font-size: 12px; color: var(--muted); letter-spacing: 0.06em; text-transform: uppercase; }
+
+  /* ----- overview card ----- */
+  .overview { display: grid; grid-template-columns: 1.4fr 1fr; gap: var(--space-6); align-items: stretch; }
+  @media (max-width: 880px) { .overview { grid-template-columns: 1fr; } }
+  .overview .screenshot { background: var(--surface); border: 1px solid var(--rule); border-radius: var(--radius-md); padding: var(--space-4); box-shadow: var(--shadow-1); }
+  .overview .legend { background: var(--surface); border: 1px solid var(--rule); border-radius: var(--radius-md); padding: var(--space-5); }
+  .overview .legend h3 { font-size: 13px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.08em; margin: 0 0 var(--space-4); }
+  .legend dl { display: grid; grid-template-columns: 90px 1fr; gap: var(--space-3) var(--space-4); margin: 0; font-size: 14px; }
+  .legend dt { font-family: var(--font-mono); font-size: 12px; color: var(--accent); font-weight: 600; letter-spacing: 0.02em; }
+  .legend dd { margin: 0; color: var(--ink-2); line-height: 1.5; }
+
+  /* ----- window mock ----- */
+  .window { background: var(--surface); border: 1px solid var(--rule-strong); border-radius: 8px; box-shadow: var(--shadow-3); overflow: hidden; }
+  .titlebar { display: flex; align-items: center; gap: 8px; padding: 8px 12px; background: var(--surface-2); border-bottom: 1px solid var(--rule); }
+  .titlebar .dot { width: 11px; height: 11px; border-radius: 50%; }
+  .titlebar .dot.r { background: #FF5F57; }
+  .titlebar .dot.y { background: #FEBC2E; }
+  .titlebar .dot.g { background: #28C840; }
+  .titlebar .title { margin-left: auto; margin-right: auto; font-size: 12px; color: var(--muted); font-family: var(--font-sans); }
+  .titlebar .title b { color: var(--ink); }
+  .win-body { padding: 12px; display: grid; grid-template-rows: auto auto auto 1fr; gap: 10px; background: var(--bg); }
+  .win-body .lbl { font-size: 10px; color: var(--muted); margin-bottom: 3px; }
+  .win-body .combo { background: var(--surface); border: 1px solid var(--rule-strong); border-radius: var(--radius); padding: 5px 8px; font-size: 11px; display: flex; justify-content: space-between; align-items: center; }
+  .win-body .combo .caret { color: var(--muted-2); }
+  .win-body .tri { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 6px; }
+  .win-body .group { border: 1px solid var(--rule-strong); border-radius: 6px; padding: 6px 8px 8px; background: var(--surface); }
+  .win-body .group-title { font-size: 9px; color: var(--muted); font-weight: 600; letter-spacing: 0.05em; text-transform: uppercase; margin-bottom: 4px; }
+  .win-body .opt { display: flex; align-items: center; gap: 5px; font-size: 10px; padding: 1px 0; color: var(--ink-2); }
+  .win-body .opt.on { color: var(--ink); font-weight: 500; }
+  .win-body .opt.off { color: var(--muted-2); }
+  .win-body .opt .radio { width: 9px; height: 9px; border-radius: 50%; border: 1.5px solid var(--rule-strong); flex: 0 0 auto; }
+  .win-body .opt.on .radio { border-color: var(--accent); background: radial-gradient(circle, var(--accent) 0 35%, transparent 38%); }
+  .win-body .opt.off .radio { background: transparent; }
+  .win-body .bottom { display: grid; grid-template-columns: 1fr auto; gap: 8px; align-items: end; }
+  .win-body .btns { display: flex; gap: 6px; }
+  .win-body .btn-mock { font-size: 10px; padding: 4px 10px; border-radius: var(--radius); border: 1px solid var(--rule-strong); background: var(--surface-2); color: var(--muted); font-family: var(--font-sans); }
+  .win-body .btn-mock.primary { background: var(--ink); color: var(--bg); border-color: var(--ink); }
+  .win-body .status { font-size: 10px; color: var(--muted); margin-top: 6px; }
+  .win-body .active-panel { border: 1px solid var(--rule-strong); border-radius: 6px; padding: 6px 10px 8px; background: var(--surface); min-width: 168px; }
+  .win-body .active-panel .group-title { color: var(--accent); }
+  .win-body .active-panel .row { font-size: 10px; color: var(--ink-2); margin-top: 2px; }
+  .win-body .active-panel .row b { color: var(--ink); font-family: var(--font-mono); }
+
+  /* ----- steps ----- */
+  .steps { display: grid; grid-template-columns: repeat(3, 1fr); gap: var(--space-5); }
+  @media (max-width: 880px) { .steps { grid-template-columns: 1fr; } }
+  .step { background: var(--surface); border: 1px solid var(--rule); border-radius: var(--radius-md); padding: var(--space-5); box-shadow: var(--shadow-1); position: relative; }
+  .step .num { display: inline-block; font-family: var(--font-mono); font-size: 11px; color: var(--accent); font-weight: 600; padding: 2px 8px; border: 1px solid var(--accent); border-radius: var(--radius-pill); margin-bottom: var(--space-3); }
+  .step h3 { margin: 0 0 var(--space-2); font-size: 18px; font-weight: 600; letter-spacing: -0.01em; }
+  .step p { margin: 0; color: var(--muted); font-size: 14px; line-height: 1.6; }
+  .step .kbd { display: inline-block; font-family: var(--font-mono); font-size: 11px; padding: 1px 6px; border: 1px solid var(--rule-strong); border-radius: var(--radius-sm); background: var(--surface-2); }
+
+  /* ----- flow ----- */
+  .flow { background: var(--surface); border: 1px solid var(--rule); border-radius: var(--radius-md); padding: var(--space-5); box-shadow: var(--shadow-1); }
+  .flow .row { display: grid; grid-template-columns: 24px 1fr; gap: var(--space-4); align-items: start; padding: var(--space-3) 0; border-top: 1px dashed var(--rule); }
+  .flow .row:first-of-type { border-top: 0; }
+  .flow .row .ix { font-family: var(--font-mono); font-size: 11px; color: var(--accent); font-weight: 600; padding-top: 1px; }
+  .flow .row .body { color: var(--ink-2); font-size: 14px; line-height: 1.6; }
+  .flow .row .body b { color: var(--ink); }
+  .flow .row .body code { font-family: var(--font-mono); font-size: 12px; background: var(--surface-2); padding: 1px 5px; border-radius: var(--radius-sm); color: var(--ink); }
+
+  /* ----- before/after ----- */
+  .compare { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-5); }
+  @media (max-width: 880px) { .compare { grid-template-columns: 1fr; } }
+  .compare .col { background: var(--surface); border: 1px solid var(--rule); border-radius: var(--radius-md); padding: var(--space-5); box-shadow: var(--shadow-1); }
+  .compare .col h4 { margin: 0 0 var(--space-3); font-size: 14px; font-weight: 600; display: flex; align-items: center; gap: var(--space-2); }
+  .compare .col h4 .tag { font-family: var(--font-mono); font-size: 11px; padding: 2px 7px; border-radius: var(--radius-pill); font-weight: 600; }
+  .compare .col.before h4 .tag { background: var(--surface-2); color: var(--muted); }
+  .compare .col.after h4 .tag { background: var(--accent-soft); color: var(--accent-ink); }
+  .compare .row { display: grid; grid-template-columns: 90px 1fr; gap: var(--space-3); padding: var(--space-2) 0; border-top: 1px dashed var(--rule); font-size: 14px; }
+  .compare .row:first-of-type { border-top: 0; }
+  .compare .row .k { font-family: var(--font-mono); font-size: 12px; color: var(--muted); }
+  .compare .row .v { color: var(--ink-2); }
+  .compare .row .v b { color: var(--ink); font-family: var(--font-mono); }
+  .compare .row .v.dim { color: var(--muted-2); font-style: italic; }
+
+  /* ----- status table ----- */
+  .states { background: var(--surface); border: 1px solid var(--rule); border-radius: var(--radius-md); overflow: hidden; box-shadow: var(--shadow-1); }
+  .states .row { display: grid; grid-template-columns: 110px 1fr 90px; gap: var(--space-3); padding: var(--space-3) var(--space-5); border-top: 1px solid var(--rule); font-size: 14px; align-items: center; }
+  .states .row:first-of-type { background: var(--surface-2); font-weight: 600; font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; }
+  .states .row:not(:first-of-type):hover { background: var(--surface-2); }
+  .states .row .pill { font-family: var(--font-mono); font-size: 11px; padding: 2px 8px; border-radius: var(--radius-pill); display: inline-block; text-align: center; font-weight: 600; }
+  .pill.pass { background: var(--accent-soft); color: var(--accent-ink); }
+  .pill.fail { background: var(--warn-soft); color: var(--warn); }
+  .pill.err { background: var(--danger-soft); color: var(--danger); }
+  .pill.cancel { background: var(--surface-2); color: var(--muted); }
+  .pill.na { background: var(--surface-2); color: var(--muted); }
+  .states .row .msg { color: var(--ink-2); }
+  .states .row .msg code { font-family: var(--font-mono); font-size: 12px; color: var(--ink); }
+  .states .row .effect { font-family: var(--font-mono); font-size: 12px; color: var(--muted); }
+
+  /* ----- cli ----- */
+  .cli-grid { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-5); }
+  @media (max-width: 880px) { .cli-grid { grid-template-columns: 1fr; } }
+  .cli-cmd { background: var(--code-bg); color: var(--code-ink); border-radius: var(--radius-md); padding: var(--space-5); font-family: var(--font-mono); font-size: 13px; box-shadow: var(--shadow-2); }
+  .cli-cmd .prompt { color: var(--accent); user-select: none; }
+  .cli-cmd .out { color: var(--muted-2); margin: 6px 0 0; }
+  .cli-list { background: var(--surface); border: 1px solid var(--rule); border-radius: var(--radius-md); box-shadow: var(--shadow-1); overflow: hidden; }
+  .cli-list .item { display: grid; grid-template-columns: 180px 1fr; gap: var(--space-4); padding: var(--space-3) var(--space-5); border-top: 1px solid var(--rule); font-size: 14px; align-items: center; }
+  .cli-list .item:first-of-type { border-top: 0; background: var(--surface-2); font-weight: 600; font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; }
+  .cli-list .item code { font-family: var(--font-mono); font-size: 13px; color: var(--accent); font-weight: 600; }
+  .cli-list .item .desc { color: var(--ink-2); }
+
+  /* ----- faq ----- */
+  .faq { display: grid; gap: var(--space-3); }
+  details.faq-i { background: var(--surface); border: 1px solid var(--rule); border-radius: var(--radius-md); padding: var(--space-4) var(--space-5); box-shadow: var(--shadow-1); transition: border-color var(--t-fast) var(--ease); }
+  details.faq-i[open] { border-color: var(--rule-strong); }
+  details.faq-i summary { cursor: pointer; font-weight: 600; font-size: 15px; list-style: none; display: flex; justify-content: space-between; align-items: center; gap: var(--space-3); }
+  details.faq-i summary::-webkit-details-marker { display: none; }
+  details.faq-i summary::after { content: "+"; color: var(--muted); font-family: var(--font-mono); font-weight: 400; transition: transform var(--t-fast) var(--ease); font-size: 18px; }
+  details.faq-i[open] summary::after { content: "−"; }
+  details.faq-i .ans { margin-top: var(--space-3); color: var(--muted); font-size: 14px; line-height: 1.7; }
+  details.faq-i .ans code { font-family: var(--font-mono); font-size: 12px; padding: 1px 5px; background: var(--surface-2); border-radius: var(--radius-sm); color: var(--ink); }
+
+  /* ----- footer ----- */
+  footer { padding: var(--space-7) 0 var(--space-9); color: var(--muted); font-size: 13px; border-top: 1px solid var(--rule); margin-top: var(--space-8); }
+  footer .inner { display: flex; justify-content: space-between; flex-wrap: wrap; gap: var(--space-3); }
+
+  /* ----- animations ----- */
+  @media (prefers-reduced-motion: no-preference) {
+    .step, .compare .col, .states, .cli-list, .cli-cmd, .flow, details.faq-i, .overview .screenshot, .overview .legend {
+      animation: fade-up var(--t-slow) var(--ease) both;
+    }
+    .step:nth-child(1) { animation-delay: 0ms; }
+    .step:nth-child(2) { animation-delay: 80ms; }
+    .step:nth-child(3) { animation-delay: 160ms; }
+  }
+  @keyframes fade-up { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+</style>
+</head>
+<body>
+
+<nav class="nav">
+  <div class="wrap nav-inner">
+    <div class="nav-brand"><span class="dot"></span> AudioDeviceConfigurator</div>
+    <div class="nav-links">
+      <a href="#overview">介面速覽</a>
+      <a href="#steps">三步上手</a>
+      <a href="#flow">播放中換設定</a>
+      <a href="#states">狀態對照</a>
+      <a href="#cli">CLI</a>
+      <a href="#faq">FAQ</a>
+    </div>
+  </div>
+</nav>
+
+<header class="hero wrap">
+  <span class="hero-eyebrow"><span class="dot"></span>Windows 10／11 x64 · .NET 10 single-file</span>
+  <h1>把播放裝置的<br/>聲道、取樣率、位元深度<br/>交回你手中。</h1>
+  <p class="lede">AudioDeviceConfigurator 透過 Windows 傳統「聲音」控制台讀取裝置支援的設定，再用 SVCL 套用並驗證。GUI 版介面精簡，三欄並排、三秒上手；驗證成功後會自動播放測試音檔，立即聽到新格式的效果。</p>
+  <div class="hero-cta">
+    <a class="btn btn-primary" href="#steps">開始使用 <span class="arrow">→</span></a>
+    <a class="btn btn-secondary" href="#overview">先看介面</a>
+  </div>
+  <div class="hero-meta">
+    <div class="item"><b>套用前</b> 自動讀取裝置當前格式</div>
+    <div class="item"><b>套用中</b> 自動還原失敗時的設定</div>
+    <div class="item"><b>套用後</b> WASAPI Shared Mode 循環驗證</div>
+    <div class="item"><b>隨時切換</b> 播放中也能改設定</div>
+  </div>
+</header>
+
+<section id="overview">
+  <div class="wrap">
+    <div class="section-head">
+      <div>
+        <div class="kicker">01 · Overview</div>
+        <h2>介面速覽</h2>
+      </div>
+      <span style="font-size:13px; color:var(--muted)">506 × 380 · 不可調整大小</span>
+    </div>
+
+    <div class="overview">
+      <div class="screenshot">
+        <div class="window" aria-label="AudioDeviceConfigurator 主畫面">
+          <div class="titlebar">
+            <span class="dot r"></span><span class="dot y"></span><span class="dot g"></span>
+            <span class="title"><b>AudioDeviceConfigurator</b></span>
+          </div>
+          <div class="win-body">
+            <div>
+              <div class="lbl">Playback endpoint</div>
+              <div class="combo"><span>喇叭 (High Definition Audio Device)</span><span class="caret">▾</span></div>
+            </div>
+
+            <div class="tri">
+              <div class="group">
+                <div class="group-title">Speaker Channels</div>
+                <div class="opt on"><span class="radio"></span>2 ch</div>
+                <div class="opt"><span class="radio"></span>4 ch</div>
+                <div class="opt"><span class="radio"></span>6 ch</div>
+                <div class="opt off"><span class="radio"></span>8 ch</div>
+              </div>
+              <div class="group">
+                <div class="group-title">Sample Rate</div>
+                <div class="opt off"><span class="radio"></span>32,000 Hz</div>
+                <div class="opt"><span class="radio"></span>44,100 Hz</div>
+                <div class="opt on"><span class="radio"></span>48,000 Hz</div>
+                <div class="opt off"><span class="radio"></span>88,200 Hz</div>
+                <div class="opt off"><span class="radio"></span>96,000 Hz</div>
+                <div class="opt off"><span class="radio"></span>176,400 Hz</div>
+                <div class="opt off"><span class="radio"></span>192,000 Hz</div>
+              </div>
+              <div class="group">
+                <div class="group-title">Bit Depth</div>
+                <div class="opt"><span class="radio"></span>16-bit</div>
+                <div class="opt off"><span class="radio"></span>20-bit</div>
+                <div class="opt on"><span class="radio"></span>24-bit</div>
+                <div class="opt off"><span class="radio"></span>32-bit</div>
+              </div>
+            </div>
+
+            <div class="bottom">
+              <div>
+                <div class="btns">
+                  <span class="btn-mock primary">Apply</span>
+                  <span class="btn-mock">Play</span>
+                  <span class="btn-mock">Stop</span>
+                </div>
+                <div class="status">Switch verified; playing test audio.</div>
+              </div>
+              <div class="active-panel">
+                <div class="group-title">Active</div>
+                <div class="row">Channel: <b>2 ch</b></div>
+                <div class="row">Sample Rate: <b>48,000 Hz</b></div>
+                <div class="row">Bit Depth: <b>24-bit</b></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <aside class="legend">
+        <h3>區塊說明</h3>
+        <dl>
+          <dt>① Combo</dt><dd>選擇 Core Audio 偵測到的活動播放裝置；視窗開啟時已預先選好 Windows 預設裝置。</dd>
+          <dt>② Channels</dt><dd>聲道數選項（2 / 4 / 6 / 8），不支援的會自動停用。</dd>
+          <dt>③ Sample Rate</dt><dd>僅列出 32 kHz 至 192 kHz 之間的標準取樣率。</dd>
+          <dt>④ Bit Depth</dt><dd>有效位元深度（16 / 20 / 24 / 32）。</dd>
+          <dt>⑤ Apply / Play / Stop</dt><dd>Apply 在播放中仍可使用，會先停止目前串流再套用。</dd>
+          <dt>⑥ Active</dt><dd>右下角即時顯示裝置目前的實際設定；Apply 前就已讀取。</dd>
+          <dt>⑦ Status</dt><dd>目前動作的結果文字。</dd>
+        </dl>
+      </aside>
+    </div>
+  </div>
+</section>
+
+<section id="steps">
+  <div class="wrap">
+    <div class="section-head">
+      <div>
+        <div class="kicker">02 · Get started</div>
+        <h2>三步上手</h2>
+      </div>
+      <span style="font-size:13px; color:var(--muted)">同資料夾需要 <code>AudioDeviceConfigurator.exe</code>、<code>svcl.exe</code>、<code>test_audio.wav</code></span>
+    </div>
+
+    <div class="steps">
+      <div class="step">
+        <span class="num">STEP 01</span>
+        <h3>啟動</h3>
+        <p>雙擊 <code>AudioDeviceConfigurator.exe</code>，或於命令列直接執行；無參數時自動開啟 GUI。視窗預設選好 Windows 當前的預設播放裝置。</p>
+      </div>
+      <div class="step">
+        <span class="num">STEP 02</span>
+        <h3>選設定</h3>
+        <p>在三欄中點選想要的聲道、取樣率、位元深度。不支援的值會以淡灰呈現且無法選取；選錯會自動清除不相容的取樣率／位元深度組合。</p>
+      </div>
+      <div class="step">
+        <span class="num">STEP 03</span>
+        <h3>按 Apply</h3>
+        <p>按下 <b>Apply</b>，程式會保存原始設定、套用新設定、讀回驗證；成功後會自動循環播放 <code>test_audio.wav</code>，讓你立刻聽到效果。</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="flow">
+  <div class="wrap">
+    <div class="section-head">
+      <div>
+        <div class="kicker">03 · Live switching</div>
+        <h2>播放中換設定</h2>
+      </div>
+      <span style="font-size:13px; color:var(--muted)">不用先按 Stop</span>
+    </div>
+
+    <div class="compare">
+      <div class="col before">
+        <h4><span class="tag">BEFORE</span>套用前的 Active 區</h4>
+        <div class="row"><span class="k">Channel</span><span class="v dim">—</span></div>
+        <div class="row"><span class="k">Sample Rate</span><span class="v dim">—</span></div>
+        <div class="row"><span class="k">Bit Depth</span><span class="v dim">—</span></div>
+        <p style="margin:var(--space-4) 0 0; color:var(--muted); font-size:13px;">視窗剛開啟時，Active 區會在選好裝置後立刻讀取裝置目前的實際設定。</p>
+      </div>
+
+      <div class="col after">
+        <h4><span class="tag">AFTER</span>套用成功後的 Active 區</h4>
+        <div class="row"><span class="k">Channel</span><span class="v"><b>2 ch</b></span></div>
+        <div class="row"><span class="k">Sample Rate</span><span class="v"><b>48,000 Hz</b></span></div>
+        <div class="row"><span class="k">Bit Depth</span><span class="v"><b>24-bit</b></span></div>
+        <p style="margin:var(--space-4) 0 0; color:var(--muted); font-size:13px;">Apply 驗證成功後，Active 區更新為剛才套用的值；接著自動播放測試音檔。</p>
+      </div>
+    </div>
+
+    <div class="flow" style="margin-top:var(--space-5)">
+      <div style="font-size:13px; color:var(--muted); margin-bottom:var(--space-3); font-weight:600;">播放中想換設定？</div>
+      <div class="row"><div class="ix">01</div><div class="body">直接點選新的 <b>RadioButton</b>（不用先按 Stop）。</div></div>
+      <div class="row"><div class="ix">02</div><div class="body"><b>Apply</b> 按鈕仍是啟用狀態，按下去會先停止目前的 WASAPI 串流。</div></div>
+      <div class="row"><div class="ix">03</div><div class="body">套用、讀回驗證成功後，會以<b>新的格式</b>自動播放測試音檔。</div></div>
+      <div class="row"><div class="ix">04</div><div class="body">播放中發生錯誤只會顯示在狀態列，<b>不會回滾</b>已驗證成功的音訊設定。</div></div>
+    </div>
+  </div>
+</section>
+
+<section id="states">
+  <div class="wrap">
+    <div class="section-head">
+      <div>
+        <div class="kicker">04 · Status reference</div>
+        <h2>狀態訊息對照</h2>
+      </div>
+      <span style="font-size:13px; color:var(--muted)">Status 列可能出現的文字</span>
+    </div>
+
+    <div class="states">
+      <div class="row"><span>Pill</span><span>狀態訊息</span><span>影響</span></div>
+      <div class="row"><span><span class="pill pass">PASS</span></span><span class="msg">Switch completed and verified.</span><span class="effect">播放測試音</span></div>
+      <div class="row"><span><span class="pill fail">MISMATCH</span></span><span class="msg">Switch failed; original settings restored.</span><span class="effect">已還原</span></div>
+      <div class="row"><span><span class="pill fail">MISMATCH</span></span><span class="msg">Switch failed; rollback incomplete.</span><span class="effect">未還原</span></div>
+      <div class="row"><span><span class="pill err">ERROR</span></span><span class="msg">SVCL not found / 未安裝 SVCL 1.28+。</span><span class="effect">無變更</span></div>
+      <div class="row"><span><span class="pill err">ERROR</span></span><span class="msg">The original speaker channel mask is unavailable.</span><span class="effect">無變更</span></div>
+      <div class="row"><span><span class="pill cancel">CANCEL</span></span><span class="msg">Cancelled.</span><span class="effect">已取消</span></div>
+      <div class="row"><span><span class="pill na">N/A</span></span><span class="msg">Endpoint has no selectable options.</span><span class="effect">無法套用</span></div>
+    </div>
+  </div>
+</section>
+
+<section id="cli">
+  <div class="wrap">
+    <div class="section-head">
+      <div>
+        <div class="kicker">05 · CLI</div>
+        <h2>命令列模式</h2>
+      </div>
+      <span style="font-size:13px; color:var(--muted)">自動化、腳本化、無 GUI 環境適用</span>
+    </div>
+
+    <div class="cli-grid">
+      <div class="cli-cmd">
+        <span class="prompt">$</span> AudioDeviceConfigurator.exe --list
+        <pre class="out">{0.0.0.00000000}.{a}  喇叭 (Realtek)
+{0.0.0.00000000}.{b}  喇叭 (USB Audio)
+{0.0.0.00000000}.{c}  耳機 (Bluetooth)  [default]</pre>
+      </div>
+
+      <div class="cli-list">
+        <div class="item"><span>選項</span><span class="desc">說明</span></div>
+        <div class="item"><code>(no args)</code><span class="desc">開啟 GUI；如偵測到 <code>--help</code>、<code>--list</code> 等則走 CLI。</span></div>
+        <div class="item"><code>--cli</code><span class="desc">強制走互動式 CLI。</span></div>
+        <div class="item"><code>--list</code><span class="desc">列出活動播放裝置後離開，不變更任何設定。</span></div>
+        <div class="item"><code>--device-id</code><span class="desc">指定要設定的播放裝置 ID（必填完整 ID）。</span></div>
+        <div class="item"><code>--help</code><span class="desc">顯示完整說明後離開。</span></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="faq">
+  <div class="wrap">
+    <div class="section-head">
+      <div>
+        <div class="kicker">06 · FAQ</div>
+        <h2>常見問題</h2>
+      </div>
+    </div>
+
+    <div class="faq">
+      <details class="faq-i" open>
+        <summary>視窗開起來是空的，三個欄都沒有任何選項？</summary>
+        <div class="ans">
+          通常是 SVCL 沒安裝或 <code>svcl.exe</code> 不在同目錄。確認 <code>svcl.exe</code>（1.28 以上）與 <code>test_audio.wav</code> 都跟 <code>AudioDeviceConfigurator.exe</code> 在同一資料夾。
+        </div>
+      </details>
+
+      <details class="faq-i">
+        <summary>Sample Rate 怎麼只剩 32k～192k？</summary>
+        <div class="ans">
+          為了讓介面更乾淨，程式只列出最常用的 32,000 / 44,100 / 48,000 / 88,200 / 96,000 / 176,400 / 192,000 Hz。如果裝置有額外支援的低／高取樣率（例如 8 kHz 或 384 kHz），仍可透過 SVCL 命令列直接套用。
+        </div>
+      </details>
+
+      <details class="faq-i">
+        <summary>Apply 之後沒聲音怎麼辦？</summary>
+        <div class="ans">
+          先看狀態列 — 如果顯示 <code>Switch verified; playing test audio.</code> 表示已通過驗證，可能是其他應用程式佔用了音訊裝置；停掉其他播放程式後再點 <b>Stop → Play</b> 即可。如果顯示 <code>Switch failed; original settings restored.</code> 表示自動還原成功，可重新選擇支援的格式再試。
+        </div>
+      </details>
+
+      <details class="faq-i">
+        <summary>視窗能不能調整大小？</summary>
+        <div class="ans">
+          不能。視窗尺寸是固定設計（506 × 380，視窗大小不可調整），確保三欄並排的版面始終一致。如果需要更大尺寸的 CLI 流程或批次處理，請改用命令列模式。
+        </div>
+      </details>
+
+      <details class="faq-i">
+        <summary>Active 區跟選的設定不一樣？</summary>
+        <div class="ans">
+          這是正常現象。Active 區永遠顯示「<b>裝置目前實際運作的設定</b>」，不會跟著 RadioButton 即時更新；只有當 <b>Apply</b> 成功驗證後（或播放中斷後重新讀取），Active 才會更新成對應的值。
+        </div>
+      </details>
+
+      <details class="faq-i">
+        <summary>不支援的選項會怎樣？</summary>
+        <div class="ans">
+          裝置不支援的取樣率、位元深度會以淡灰顯示，無法被選取。如果想強制套用不支援的格式，請使用 CLI 模式並透過 SVCL 直接指定。
+        </div>
+      </details>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap inner">
+    <div>© AudioDeviceConfigurator · MIT</div>
+    <div>Need help? <a href="https://github.com/gchang1008/AudioDeviceConfigurator/issues" target="_blank" rel="noopener">Open an issue →</a></div>
+  </div>
+</footer>
+
+</body>
+</html>
