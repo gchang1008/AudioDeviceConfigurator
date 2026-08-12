@@ -4,6 +4,16 @@ Reads the selected Windows playback endpoint's Sound Control Panel speaker-chann
 
 Windows 10/11 x64. The application is a .NET 10 self-contained single-file executable with no third-party NuGet packages.
 
+## Requirements
+
+- **OS:** Windows 10 1809 (build 17763) or later, 64-bit. Windows 11 is supported. Windows 7 / 8 / 8.1 are not supported.
+- **CPU:** 64-bit processor with `CMPXCHG16B`, `LAHF/SAHF`, and `AVX2` instructions (any CPU released after ~2015 qualifies).
+- **.NET:** none required at runtime — the executable bundles the .NET 10 runtime. No Visual C++ Redistributable installation is required.
+- **Audio:** A playback endpoint reachable through Windows Core Audio.
+- **External files in the same folder:** `svcl.exe` (SVCL 1.28 or newer) and `test_audio.wav`.
+
+If the executable fails to start with `0x80131506` (CoreCLR ExecutionEngine), confirm the OS build with `winver` and that the host machine satisfies the CPU and OS requirements above.
+
 ## Quick start
 
 Keep these files together in a writable folder:
