@@ -11,47 +11,66 @@ public sealed class CoreAudioEndpointProvider : IAudioEndpointProvider
     public IReadOnlyList<EndpointInfo> GetActiveRenderEndpoints()
     {
         var enumerator = CreateEnumerator();
-        string? defaultId = null;
-        if (enumerator.GetDefaultAudioEndpoint(CoreAudio.EDataFlowRender, CoreAudio.ERoleConsole, out var defaultDevice) == CoreAudio.SOk)
+        try
         {
-            defaultDevice.GetId(out defaultId);
-            Marshal.ReleaseComObject(defaultDevice);
-        }
-
-        Check(enumerator.EnumAudioEndpoints(CoreAudio.EDataFlowRender, CoreAudio.DeviceStateActive, out var collection),
-            "Unable to enumerate active render endpoints.");
-        Check(collection.GetCount(out var count), "Unable to count active render endpoints.");
-
-        var results = new List<EndpointInfo>(count);
-        for (var i = 0; i < count; i++)
-        {
-            if (collection.Item(i, out var device) != CoreAudio.SOk)
+            string? defaultId = null;
+            if (enumerator.GetDefaultAudioEndpoint(CoreAudio.EDataFlowRender, CoreAudio.ERoleConsole, out var defaultDevice)
+                == CoreAudio.SOk)
             {
-                continue;
+                try
+                {
+                    defaultDevice.GetId(out defaultId);
+                }
+                finally
+                {
+                    Marshal.ReleaseComObject(defaultDevice);
+                }
             }
 
+            Check(enumerator.EnumAudioEndpoints(CoreAudio.EDataFlowRender, CoreAudio.DeviceStateActive, out var collection),
+                "Unable to enumerate active render endpoints.");
             try
             {
-                device.GetId(out var id);
-                var name = ReadProperty(device, CoreAudio.PkeyDeviceFriendlyName) ?? id;
-                var description = ReadProperty(device, CoreAudio.PkeyDeviceDeviceDesc) ?? "";
-                results.Add(new EndpointInfo(
-                    EndpointId: id,
-                    FriendlyName: name,
-                    DeviceDescription: description,
-                    DriverName: ExtractDeviceName(name, description),
-                    DriverVersion: null,
-                    IsDefault: string.Equals(id, defaultId, StringComparison.OrdinalIgnoreCase)));
+                Check(collection.GetCount(out var count), "Unable to count active render endpoints.");
+
+                var results = new List<EndpointInfo>(count);
+                for (var i = 0; i < count; i++)
+                {
+                    if (collection.Item(i, out var device) != CoreAudio.SOk)
+                    {
+                        continue;
+                    }
+
+                    try
+                    {
+                        device.GetId(out var id);
+                        var name = ReadProperty(device, CoreAudio.PkeyDeviceFriendlyName) ?? id;
+                        var description = ReadProperty(device, CoreAudio.PkeyDeviceDeviceDesc) ?? "";
+                        results.Add(new EndpointInfo(
+                            EndpointId: id,
+                            FriendlyName: name,
+                            DeviceDescription: description,
+                            DriverName: ExtractDeviceName(name, description),
+                            DriverVersion: null,
+                            IsDefault: string.Equals(id, defaultId, StringComparison.OrdinalIgnoreCase)));
+                    }
+                    finally
+                    {
+                        Marshal.ReleaseComObject(device);
+                    }
+                }
+
+                return results;
             }
             finally
             {
-                Marshal.ReleaseComObject(device);
+                Marshal.ReleaseComObject(collection);
             }
         }
-
-        Marshal.ReleaseComObject(collection);
-        Marshal.ReleaseComObject(enumerator);
-        return results;
+        finally
+        {
+            Marshal.ReleaseComObject(enumerator);
+        }
     }
 
     public EndpointInfo? GetDefaultRenderEndpoint() =>

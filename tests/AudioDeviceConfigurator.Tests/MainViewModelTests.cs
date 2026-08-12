@@ -389,6 +389,37 @@ public sealed class MainViewModelTests
     }
 
     [Fact]
+    public async Task ApplyAsync_does_not_start_playback_or_update_active_when_token_cancelled()
+    {
+        var vm = NewViewModel(out var harness);
+        SeedEndpoints(harness, "ep-1");
+        SeedOptions(harness, channels: new[] { 2 }, formats: new[]
+        {
+            new ControlPanelFormatItem(0, "16 bit, 44100 Hz", 2, 44100, 16, 16, ControlPanelParseStatus.Parsed, null),
+        });
+        harness.Svcl
+            .EnqueueSavedFormat(Format(2, 16, 44100, 0x3))
+            .EnqueueSavedFormat(Format(2, 16, 44100, 0x3));
+        var startCallsBefore = harness.Playback.StartCalls;
+
+        await vm.LoadEndpointsAsync(CancellationToken.None);
+        await vm.EndpointChangedAsync(vm.Endpoints[0], CancellationToken.None);
+        vm.SelectChannelIndex(0);
+        vm.SelectFormatIndex(0);
+
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+        var result = await vm.ApplyAsync(cts.Token);
+
+        Assert.Equal(SwitchStatus.Cancelled, result.Status);
+        Assert.Equal(startCallsBefore, harness.Playback.StartCalls);
+        Assert.False(harness.Playback.IsPlaying);
+        Assert.Null(vm.ActiveChannel);
+        Assert.Null(vm.ActiveSampleRate);
+        Assert.Null(vm.ActiveBitDepth);
+    }
+
+    [Fact]
     public async Task Play_starts_the_verified_endpoint_again_after_stop()
     {
         var vm = NewViewModel(out var harness);

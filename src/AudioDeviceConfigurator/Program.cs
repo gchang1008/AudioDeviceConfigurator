@@ -95,7 +95,7 @@ public static class Program
             fileSystem,
             Path.Combine(appDirectory, "svcl.exe"));
         var service = new DeviceConfigurationService(endpointProvider, controlPanel, svcl);
-        var playback = new WasapiAudioPlaybackService();
+        using var playback = new WasapiAudioPlaybackService();
         var viewModel = new MainViewModel(
             service,
             playback,

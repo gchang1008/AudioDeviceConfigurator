@@ -14,6 +14,7 @@ public partial class MainWindow : Window
     private readonly IAudioEndpointChangeMonitor? _endpointChanges;
     private readonly DispatcherTimer _endpointRefreshTimer;
     private readonly List<AudioEndpointChange> _pendingEndpointChanges = [];
+    private readonly CancellationTokenSource _windowCts = new();
     private bool _endpointRefreshInProgress;
     private bool _suppressEndpointSelectionChanged;
     private bool _closed;
@@ -49,7 +50,16 @@ public partial class MainWindow : Window
     {
         try
         {
+            // OnLoaded itself can't be cancelled mid-flight without aborting the
+            // startup sequence; cancellation is observed in selection-changed
+            // and apply paths instead. The window token is checked after the
+            // initial endpoint load to avoid touching UI after close.
             await _viewModel.LoadEndpointsAsync(CancellationToken.None);
+            if (_closed)
+            {
+                return;
+            }
+
             var defaultEndpoint = _viewModel.Endpoints.FirstOrDefault(item => item.IsDefault)
                 ?? _viewModel.Endpoints.FirstOrDefault();
             if (defaultEndpoint is not null)
@@ -107,8 +117,16 @@ public partial class MainWindow : Window
         _suppressEndpointSelectionChanged = true;
         try
         {
-            await _viewModel.RefreshEndpointsAsync(changes, CancellationToken.None);
+            await _viewModel.RefreshEndpointsAsync(changes, _windowCts.Token);
+            if (_closed)
+            {
+                return;
+            }
+
             EndpointCombo.SelectedItem = _viewModel.SelectedEndpoint;
+        }
+        catch (OperationCanceledException)
+        {
         }
         catch (Exception ex)
         {
@@ -118,7 +136,7 @@ public partial class MainWindow : Window
         {
             _suppressEndpointSelectionChanged = false;
             _endpointRefreshInProgress = false;
-            if (_pendingEndpointChanges.Count > 0)
+            if (!_closed && _pendingEndpointChanges.Count > 0)
             {
                 _endpointRefreshTimer.Start();
             }
@@ -127,7 +145,7 @@ public partial class MainWindow : Window
 
     private async void EndpointCombo_OnSelectionChanged(object sender, SelectionChangedEventArgs e)
     {
-        if (_suppressEndpointSelectionChanged)
+        if (_closed || _suppressEndpointSelectionChanged)
         {
             return;
         }
@@ -138,8 +156,16 @@ public partial class MainWindow : Window
 
         try
         {
-            await _viewModel.EndpointChangedAsync(endpoint, CancellationToken.None);
-            await _viewModel.LoadActiveSettingsAsync(endpoint, CancellationToken.None);
+            await _viewModel.EndpointChangedAsync(endpoint, _windowCts.Token);
+            if (_closed)
+            {
+                return;
+            }
+
+            await _viewModel.LoadActiveSettingsAsync(endpoint, _windowCts.Token);
+        }
+        catch (OperationCanceledException)
+        {
         }
         catch (Exception ex)
         {
@@ -175,7 +201,10 @@ public partial class MainWindow : Window
     {
         try
         {
-            await _viewModel.ApplyAsync(CancellationToken.None);
+            await _viewModel.ApplyAsync(_windowCts.Token);
+        }
+        catch (OperationCanceledException)
+        {
         }
         catch (Exception ex)
         {
@@ -196,6 +225,7 @@ public partial class MainWindow : Window
     protected override void OnClosed(EventArgs e)
     {
         _closed = true;
+        _windowCts.Cancel();
         _endpointRefreshTimer.Stop();
         _pendingEndpointChanges.Clear();
         if (_endpointChanges is not null)
@@ -203,6 +233,7 @@ public partial class MainWindow : Window
             _endpointChanges.Changed -= EndpointChanges_OnChanged;
         }
         _viewModel.StopPlayback();
+        _viewModel.Dispose();
         base.OnClosed(e);
     }
 }

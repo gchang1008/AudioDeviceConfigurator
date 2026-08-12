@@ -12,7 +12,7 @@ namespace AudioDeviceConfigurator.Gui;
 /// Pure logic for the WPF main window. Tested without spinning up WPF so the binding
 /// contracts, locking rules, and status transitions stay covered.
 /// </summary>
-public sealed class MainViewModel : INotifyPropertyChanged
+public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 {
     private readonly DeviceConfigurationService _service;
     private readonly IAudioPlaybackService _playback;
@@ -20,11 +20,11 @@ public sealed class MainViewModel : INotifyPropertyChanged
     private readonly Func<EndpointInfo, WaveSource>? _resolveWaveSource;
     private readonly Action<Action> _dispatch;
     private readonly HashSet<(int SampleRate, int BitDepth)> _formatPairs = new();
-    private CancellationTokenSource? _applyCancellation;
     private string? _requestedPlaybackEndpointId;
     private EndpointInfo? _defaultEndpoint;
     private bool _followDefaultEndpoint;
     private bool _defaultPlaybackRequested;
+    private int _disposed;
 
     private static readonly int[] CommonChannels = [2, 4, 6, 8];
     private static readonly int[] CommonSampleRates =
@@ -44,10 +44,23 @@ public sealed class MainViewModel : INotifyPropertyChanged
         _playback = playback;
         _createCancellation = createCancellation ?? (() => new CancellationTokenSource());
         _resolveWaveSource = resolveWaveSource;
-        _dispatch = dispatcher ?? (action => action());
+        _dispatch = dispatcher ?? InvokeOnDispatcher;
         _playback.PlaybackFailed += OnPlaybackFailed;
         _playback.PropertyChanged += (_, _) => RefreshPlaybackState();
         SeedCommonSwitchOptions();
+    }
+
+    private static void InvokeOnDispatcher(Action action)
+    {
+        var app = System.Windows.Application.Current;
+        if (app is null || app.Dispatcher.CheckAccess())
+        {
+            action();
+        }
+        else
+        {
+            app.Dispatcher.Invoke(action);
+        }
     }
 
     public event PropertyChangedEventHandler? PropertyChanged;
@@ -449,10 +462,9 @@ public sealed class MainViewModel : INotifyPropertyChanged
             return new SwitchResult(SwitchStatus.SystemError, "The selected sample rate and bit depth are not available.", true);
         }
 
-        _applyCancellation?.Dispose();
-        _applyCancellation = _createCancellation();
+        var localCancellation = _createCancellation();
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(
-            cancellationToken, _applyCancellation.Token);
+            cancellationToken, localCancellation.Token);
         // Stop any existing playback stream before swapping the endpoint's format.
         _defaultPlaybackRequested = false;
         _requestedPlaybackEndpointId = null;
@@ -468,29 +480,62 @@ public sealed class MainViewModel : INotifyPropertyChanged
                 formatIndex,
                 linked.Token);
         }
+        catch (OperationCanceledException) when (linked.Token.IsCancellationRequested)
+        {
+            localCancellation.Dispose();
+            SetBusy(false);
+            return new SwitchResult(SwitchStatus.Cancelled, null, RollbackVerified: true);
+        }
         finally
         {
+            localCancellation.Dispose();
             SetBusy(false);
         }
 
         _dispatch(() => ApplyStatusMessage(result));
 
+        // The window may have been closed between ApplyAsync completing and
+        // reaching this point; do not mutate Active settings or kick off
+        // playback once cancellation has been observed. The check is repeated
+        // before _playback.Start because Start itself is synchronous but the
+        // token can flip while we are still walking this method.
+        if (linked.Token.IsCancellationRequested)
+        {
+            return result;
+        }
+
         if (result.Status == SwitchStatus.Pass)
         {
             _dispatch(() =>
             {
+                if (linked.Token.IsCancellationRequested)
+                {
+                    return;
+                }
                 SetActiveSettings(channel, SelectedSampleRate!.Value, SelectedBitDepth!.Value);
             });
         }
 
         if (result.Status == SwitchStatus.Pass && _resolveWaveSource is not null)
         {
+            if (linked.Token.IsCancellationRequested)
+            {
+                return result;
+            }
+
             try
             {
                 var source = _resolveWaveSource(endpoint);
                 _playback.Start(endpoint, source);
                 _requestedPlaybackEndpointId = endpoint.EndpointId;
-                _dispatch(() => StatusMessage = "Switch verified; playing test audio.");
+                if (!linked.Token.IsCancellationRequested)
+                {
+                    _dispatch(() => StatusMessage = "Switch verified; playing test audio.");
+                }
+            }
+            catch (ObjectDisposedException)
+            {
+                // Playback service was disposed mid-Apply (window closed).
             }
             catch (Exception ex)
             {
@@ -549,14 +594,14 @@ public sealed class MainViewModel : INotifyPropertyChanged
         _dispatch(() => StatusMessage = $"Playback error: {ex.Message}");
     }
 
-    public void NotePlaybackStopped()
+    public void Dispose()
     {
-        _dispatch(() => { /* binding re-evaluates CanPlay/CanStop on next refresh */ });
-    }
+        if (Interlocked.Exchange(ref _disposed, 1) != 0)
+        {
+            return;
+        }
 
-    public void NotePlaybackStarted()
-    {
-        _dispatch(() => { /* playback state is owned by the service */ });
+        _playback.PlaybackFailed -= OnPlaybackFailed;
     }
 
     private void PopulateOptions(EndpointOptionsResult result)

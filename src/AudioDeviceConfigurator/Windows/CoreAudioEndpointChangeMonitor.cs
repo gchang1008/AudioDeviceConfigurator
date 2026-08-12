@@ -58,7 +58,7 @@ public sealed class CoreAudioEndpointChangeMonitor : IAudioEndpointChangeMonitor
     private readonly CoreAudio.IMMDeviceEnumerator _enumerator;
     private readonly CoreAudioNotificationClient _client;
     private readonly Action<object> _release;
-    private bool _disposed;
+    private int _disposed;
 
     public CoreAudioEndpointChangeMonitor()
         : this(CoreAudioEndpointProvider.CreateEnumerator(), value => Marshal.ReleaseComObject(value))
@@ -85,21 +85,23 @@ public sealed class CoreAudioEndpointChangeMonitor : IAudioEndpointChangeMonitor
 
     public void Dispose()
     {
-        if (_disposed)
+        if (Interlocked.Exchange(ref _disposed, 1) != 0)
         {
             return;
         }
 
-        _disposed = true;
+        Changed = null;
         _enumerator.UnregisterEndpointNotificationCallback(_client);
         _release(_enumerator);
     }
 
     private void Publish(AudioEndpointChange change)
     {
-        if (!_disposed)
+        if (Volatile.Read(ref _disposed) != 0)
         {
-            Changed?.Invoke(this, change);
+            return;
         }
+
+        Changed?.Invoke(this, change);
     }
 }
